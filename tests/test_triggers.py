@@ -165,6 +165,18 @@ def test_audit_log_records_who_field_old_new(db):
                 "AND field_name='weight_kg'", (str(d),)) == [(db.nurse, "70.0", "72.0")]
 
 
+@pytest.mark.parametrize("sql, table", [
+    ("UPDATE eligibility_rule SET min_hemoglobin_gl = 126 WHERE sex = 'F'", "eligibility_rule"),
+    ("UPDATE component_type SET shelf_life_days = 7 WHERE component_code = 'PLT'", "component_type"),
+    ("UPDATE donation_interval SET interval_days = 90 WHERE donation_type_code = 'WB' AND sex = 'F'", "donation_interval"),
+    ("UPDATE deferral_reason SET default_days = 120 WHERE reason_code = 'TATTOO'", "deferral_reason"),
+])
+def test_clinical_rule_changes_are_audited(db, sql, table):
+    """SE-08 / FR-32: an Admin's change to any rule table leaves an audit row."""
+    db.q(sql)
+    assert db.one("SELECT count(*) FROM audit_log WHERE table_name=%s AND action='UPDATE'", (table,)) == 1
+
+
 def test_temp_table_cannot_shadow_the_audit_log(db):
     """SE-08: SECURITY DEFINER functions search pg_temp last."""
     d = db.donor()

@@ -1,5 +1,6 @@
 """Stored procedures: each test drives one procedure through its normal path and its refusals."""
 import json
+import re
 
 import pytest
 
@@ -112,6 +113,26 @@ def test_nightly_expiry_releases_reservations_and_logs_the_run(db):
     assert db.one("SELECT count(*) FROM audit_log WHERE action='JOB' AND record_id='expire_units'") == 1
 
 
+def test_nightly_expiry_includes_units_still_awaiting_tests(db):
+    """UC-14: a Collected unit past expiry is expired too, not left in limbo."""
+    dn = db.donate(db.donor(), days_ago=6)
+    unit = db.one("SELECT separate_donation(%s, ARRAY['PLT'])", (dn,))
+    db.q("SELECT expire_units()")
+    assert db.one("SELECT status FROM blood_unit WHERE unit_id=%s", (unit,)) == "Expired"
+
+
+def test_low_hemoglobin_defers_instead_of_donating(db):
+    """UC-07 2a: a low reading records a temporary deferral and no donation."""
+    d = db.donor(sex="F")
+    db.screen(d)
+    assert db.one("SELECT record_donation(%s,%s,'WB',450,120)", (d, db.nurse)) is None
+    assert db.one("SELECT count(*) FROM donation WHERE donor_id=%s", (d,)) == 0
+    assert db.q("SELECT reason_code, end_date - CURRENT_DATE FROM deferral WHERE donor_id=%s", (d,)) == [("LOWHB", 56)]
+    ok = db.donor(sex="F")
+    db.screen(ok)
+    assert db.one("SELECT record_donation(%s,%s,'WB',450,130)", (ok, db.nurse)) is not None
+
+
 def test_quarantine_pulls_available_and_reserved_units(db):
     d = db.donor("B+")
     dn = db.donate(d, days_ago=10)
@@ -140,7 +161,8 @@ def test_donor_search_matches_and_hides_contact_details(db):
 # ---------------------------------------------------------------------- accounts FR-01 / FR-04 / SE-05
 def test_register_donor_is_unverified_with_generated_code(db):
     d = db.donor("AB-", verified=False)
-    assert db.q("SELECT donor_code, blood_group, verified_by FROM donor WHERE user_id=%s", (d,)) == [(f"D-{d:06d}", "AB-", None)]
+    code, group, verified = db.q("SELECT donor_code, blood_group, verified_by FROM donor WHERE user_id=%s", (d,))[0]
+    assert re.fullmatch(r"D-\d{4,}", code) and (group, verified) == ("AB-", None)
     assert "unique" in db.fails("SELECT register_donor('NURSE@v.ca','x','A','B',NULL,'1990-01-01','F',60,NULL,NULL)")
 
 
@@ -181,6 +203,13 @@ def test_deferring_answer_creates_a_system_deferral(db):
     sid = db.one("SELECT submit_screening(%s,%s)", (d, answers(db, TATTOO=True)))
     assert db.q("SELECT reason_code, end_date - CURRENT_DATE, screening_id FROM deferral WHERE donor_id=%s", (d,)) == [("TATTOO", 90, sid)]
     assert db.one("SELECT status FROM v_donor_eligibility WHERE user_id=%s", (d,)).startswith("Not eligible until")
+
+
+@pytest.mark.parametrize("reason, days", [("MEDS", 30), ("PREG", 180)])
+def test_medication_and_pregnancy_questions_defer(db, reason, days):
+    d = db.donor(sex="F")
+    db.one("SELECT submit_screening(%s,%s)", (d, answers(db, **{reason: True})))
+    assert db.q("SELECT reason_code, end_date - CURRENT_DATE FROM deferral WHERE donor_id=%s", (d,)) == [(reason, days)]
 
 
 def test_unanswered_questions_rejected(db):

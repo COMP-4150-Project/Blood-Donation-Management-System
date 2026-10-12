@@ -23,7 +23,7 @@ from vytal.queries import load  # noqa: E402
 
 OUT = ROOT.parent / "Vytal - Step 4 Implementation Report.docx"
 FONT, MONO = "Calibri", "Consolas"
-TEAM = [("Jainam Sheth", "Systems Analyst"), ("Mohammad Imaad", "Data Modeling Specialist"),
+TEAM = [("Jainam Jaykumar Sheth", "Systems Analyst"), ("Mohammad Imaad", "Data Modeling Specialist"),
         ("Aakanksha Mandal", "Backend Engineer"), ("Shruti Dadhania", "UX & Integration Specialist")]
 
 doc = Document()
@@ -156,7 +156,7 @@ bench = json.loads((ROOT / "bench" / "results.json").read_text())
 
 # ---------------------------------------------------------------------- title
 p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-fmt(p.add_run("Vytal: Blood Donor and Request Management System"), 18, bold=True)
+fmt(p.add_run("Vytal: Donor Eligibility and Blood Request Management System"), 18, bold=True)
 p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 fmt(p.add_run("COMP-4150 Project, Step 4: Implementation"), 14)
 p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -398,7 +398,7 @@ bullets(["**No inter-facility transfers.** A hospital can only use units collect
 
 H("10. Contributions")
 table(["Member", "Step 4 contribution"], [
-    ("Jainam Sheth", "Roadmap, cross-checking against Steps 2 and 3, key queries, testing strategy, this report"),
+    ("Jainam Jaykumar Sheth", "Roadmap, cross-checking against Steps 2 and 3, key queries, testing strategy, this report"),
     ("Mohammad Imaad", "Schema and constraints, reference data, sample data"),
     ("Aakanksha Mandal", "Stored procedures and triggers, backend services, concurrency tests"),
     ("Shruti Dadhania", "Backend operations as seen from the Step 5 screens, input validation messages, report layout"),

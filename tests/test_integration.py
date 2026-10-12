@@ -9,7 +9,7 @@ from conftest import PREFIX, build
 from vytal import services as svc
 
 PASSWORD = "correct-horse-42"
-CLEAN = {"1": False, "2": False, "3": True, "4": False}
+CLEAN = {"1": False, "2": False, "3": True, "4": False, "5": False, "6": False}
 NEG = {"HIV": "Negative", "HBV": "Negative", "HCV": "Negative", "SYPH": "Negative"}
 SOON = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)
 
@@ -66,6 +66,15 @@ def test_donor_journey_from_registration_to_transfusion(world):
     home = svc.donor_home(donor)
     assert home["status"] == f"Not eligible until {dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=56)}"
     assert [(f, t, n) for _, f, t, n in home["history"]] == [("Windsor General", "WB", len(units))]
+
+
+def test_low_hemoglobin_reading_defers_the_donor(world):
+    w = world["windsor"]
+    donor = new_donor("anemic@v.ca", "A+", sex="F")
+    svc.verify_blood_group(w, donor, "A+")
+    svc.screen_donor(w, donor, CLEAN)
+    assert svc.record_donation(w, donor, "WB", 450, 118, ["RBC"]) == (None, [])
+    assert svc.donor_home(donor)["status"].startswith("Not eligible until")
 
 
 def test_lockout_after_five_failed_logins(world):

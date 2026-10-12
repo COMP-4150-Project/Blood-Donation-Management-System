@@ -8,6 +8,7 @@ INSERT INTO blood_group VALUES
 INSERT INTO component_type VALUES ('RBC','Red Blood Cells',42), ('PLASMA','Plasma',365), ('PLT','Platelets',5);
 
 -- Red cells and platelets: the donor's ABO antigens must be a subset of the recipient's, and Rh- recipients need Rh- units (27 pairs each).
+-- Steps 2 and 3 set no separate platelet rule, so platelets use the stricter red-cell matching; an Admin can change these rows (MA-01).
 INSERT INTO compatibility
 SELECT c.code, r.blood_group, d.blood_group
 FROM blood_group r CROSS JOIN blood_group d CROSS JOIN (VALUES ('RBC'), ('PLT')) AS c(code)
@@ -29,6 +30,8 @@ INSERT INTO deferral_reason VALUES
     ('TRAVEL','Travel to a malaria-risk area in the last 3 months',FALSE,90),
     ('UNWELL','Feeling unwell on the day of donation',FALSE,1),
     ('LOWHB','Hemoglobin below the minimum',FALSE,56),
+    ('MEDS','Taking a medication that affects donation',FALSE,30),
+    ('PREG','Pregnant or gave birth in the last 6 months',FALSE,180),
     ('HBV','Hepatitis B positive',TRUE,NULL),
     ('HIV','HIV positive',TRUE,NULL);
 
@@ -39,4 +42,6 @@ INSERT INTO screening_question (question_text, reason_code, defer_on_answer) VAL
     ('Have you had a tattoo or piercing in the last 3 months?','TATTOO',TRUE),
     ('Have you travelled to a malaria-risk area in the last 3 months?','TRAVEL',TRUE),
     ('Are you feeling well today?','UNWELL',FALSE),
-    ('Do you have any questions for staff before donating?',NULL,NULL);
+    ('Do you have any questions for staff before donating?',NULL,NULL),
+    ('Are you taking any medication such as blood thinners, antibiotics or isotretinoin?','MEDS',TRUE),
+    ('Are you pregnant, or have you been pregnant in the last 6 months?','PREG',TRUE);

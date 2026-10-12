@@ -116,12 +116,13 @@ def verify_blood_group(staff_id, donor_id, blood_group):
 
 
 def record_donation(staff_id, donor_id, donation_type, volume_ml, hemoglobin_gl, components):
-    """FR-11 / FR-12: the eligibility trigger refuses ineligible donors; returns the new unit ids."""
+    """FR-11 / FR-12: returns (donation_id, unit ids), or (None, []) when low hemoglobin deferred the donor (UC-07 2a)."""
     with session(staff_id) as con:
         _role(con, staff_id, "Staff")
-        dn = con.execute("INSERT INTO donation (donor_id, recorded_by, donation_type_code, donated_at, volume_ml, hemoglobin_gl) "
-                         "VALUES (%s,%s,%s,now(),%s,%s) RETURNING donation_id",
+        dn = con.execute("SELECT record_donation(%s,%s,%s,%s,%s)",
                          (donor_id, staff_id, donation_type, volume_ml, hemoglobin_gl)).fetchone()[0]
+        if dn is None:
+            return None, []
         units = [u for (u,) in con.execute("SELECT separate_donation(%s,%s)", (dn, components))]
     return dn, units
 

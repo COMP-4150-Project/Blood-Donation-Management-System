@@ -1,6 +1,7 @@
 SET search_path = vytal;
 
 -- ---------------------------------------------------------------- FR-01 donor self-registration (supertype + subtype in one transaction)
+CREATE SEQUENCE donor_code_seq START 1001;           -- donor codes D-1001, D-1002, ... as in the Step 2 scenarios
 CREATE FUNCTION register_donor(p_email text, p_password_hash text, p_first text, p_last text, p_phone text,
                                p_dob date, p_sex char, p_weight numeric, p_address text, p_blood_group text)
 RETURNS int LANGUAGE plpgsql AS $$
@@ -10,7 +11,7 @@ BEGIN
     VALUES (lower(p_email), p_password_hash, p_first, p_last, p_phone, 'Donor') RETURNING user_id INTO uid;
     -- the self-reported group stays unverified (verified_by NULL) until staff confirm it (FR-09)
     INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group)
-    VALUES (uid, 'D-' || lpad(uid::text, 6, '0'), p_dob, p_sex, p_weight, p_address, p_blood_group);
+    VALUES (uid, 'D-' || nextval('donor_code_seq'), p_dob, p_sex, p_weight, p_address, p_blood_group);
     RETURN uid;
 END $$;
 
@@ -64,6 +65,23 @@ BEGIN
     FROM screening_answer a JOIN screening_question q USING (question_id) JOIN deferral_reason r USING (reason_code)
     WHERE a.screening_id = sid AND a.answer = q.defer_on_answer;
     RETURN sid;
+END $$;
+
+-- ---------------------------------------------------------------- FR-11 / UC-07 record a donation; low hemoglobin defers instead (UC-07 2a)
+-- Returns the new donation_id, or NULL when the reading was below the donor's minimum and a LOWHB deferral was recorded.
+-- Every other eligibility rule is still enforced by the check_donation_eligible trigger.
+CREATE FUNCTION record_donation(p_donor int, p_staff int, p_type text, p_volume int, p_hemoglobin numeric)
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE dn int;
+BEGIN
+    IF p_hemoglobin < (SELECT r.min_hemoglobin_gl FROM donor o JOIN eligibility_rule r USING (sex) WHERE o.user_id = p_donor) THEN
+        INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by)
+        SELECT p_donor, 'LOWHB', CURRENT_DATE + default_days, p_staff FROM deferral_reason WHERE reason_code = 'LOWHB';
+        RETURN NULL;
+    END IF;
+    INSERT INTO donation (donor_id, recorded_by, donation_type_code, donated_at, volume_ml, hemoglobin_gl)
+    VALUES (p_donor, p_staff, p_type, now(), p_volume, p_hemoglobin) RETURNING donation_id INTO dn;
+    RETURN dn;
 END $$;
 
 -- ---------------------------------------------------------------- FR-12 split a donation into one unit per component
