@@ -7,17 +7,17 @@ INSERT INTO blood_group VALUES
 
 INSERT INTO component_type VALUES ('RBC','Red Blood Cells',42), ('PLASMA','Plasma',365), ('PLT','Platelets',5);
 
--- Red cells and platelets: the donor's ABO antigens must be a subset of the recipient's, and Rh- recipients need Rh- units (27 pairs each).
--- Steps 2 and 3 set no separate platelet rule, so platelets use the stricter red-cell matching; an Admin can change these rows (MA-01).
+-- Red cells: the donor's ABO antigens must be a subset of the recipient's, and Rh- recipients need Rh- units (27 pairs).
 INSERT INTO compatibility
-SELECT c.code, r.blood_group, d.blood_group
-FROM blood_group r CROSS JOIN blood_group d CROSS JOIN (VALUES ('RBC'), ('PLT')) AS c(code)
+SELECT 'RBC', r.blood_group, d.blood_group
+FROM blood_group r CROSS JOIN blood_group d
 WHERE (d.abo = 'O' OR position(d.abo IN r.abo) > 0) AND (d.rh = '-' OR r.rh = '+');
 
 -- Plasma is the reverse (ABO only): the donor's plasma must carry no antibody against the recipient's antigens (36 pairs).
+-- Platelets are stored in plasma, so they use the plasma rule by default (36 pairs); an Admin can change these rows (MA-01).
 INSERT INTO compatibility
-SELECT 'PLASMA', r.blood_group, d.blood_group
-FROM blood_group r CROSS JOIN blood_group d
+SELECT c.code, r.blood_group, d.blood_group
+FROM blood_group r CROSS JOIN blood_group d CROSS JOIN (VALUES ('PLASMA'), ('PLT')) AS c(code)
 WHERE r.abo = 'O' OR position(r.abo IN d.abo) > 0;
 
 INSERT INTO donation_type VALUES ('WB','Whole Blood'), ('PLS','Plasma'), ('PLT','Platelets');

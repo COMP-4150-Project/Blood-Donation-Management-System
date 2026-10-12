@@ -1,0 +1,7 @@
+# Install with: crontab -e  (edit the path and connection settings first)
+PGHOST=localhost
+PGDATABASE=vytal
+# nightly expiry at 00:05 (FR-20)
+5 0 * * * /path/to/Blood-Donation-Management-System/ops/nightly_expiry.sh >> /var/tmp/vytal_expiry.log 2>&1
+# daily backup with restore check at 01:00 (DI-05)
+0 1 * * * cd /path/to/Blood-Donation-Management-System && ./ops/backup.sh /var/backups/vytal >> /var/tmp/vytal_backup.log 2>&1

@@ -92,6 +92,8 @@ BEGIN
         ('Available','Reserved'), ('Available','Discarded'), ('Available','Expired'), ('Available','Quarantined'),
         ('Reserved','Available'), ('Reserved','Issued'), ('Reserved','Expired'), ('Reserved','Quarantined'),
         ('Quarantined','Discarded'), ('Quarantined','Available'));
+    -- Beyond the main lifecycle in Step 2 (FR-14): Collected -> Quarantined lets a lookback pull a bag still awaiting tests,
+    -- and Reserved -> Expired lets a unit that expires while reserved be written off instead of issued.
     IF NOT ok THEN RAISE EXCEPTION 'invalid unit status change % -> %', OLD.status, NEW.status; END IF;
     NEW.status_changed_at := now();
     IF OLD.status = 'Collected' AND NEW.status = 'Available' THEN

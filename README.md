@@ -29,6 +29,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `vytal/` | Python backend (password hashing, sessions, operations used by the GUI) |
 | `tests/` | pytest suite (unit, integration, concurrency, security, data integrity) |
 | `bench/` | Performance benchmark and its bulk-data generator |
+| `ops/` | Runnable nightly expiry and backup scripts, with a crontab example |
 | `report/` | Script that builds the Step 4 report |
 
 ---
@@ -151,35 +152,27 @@ Expected: **142 passed, 3 skipped**.
 
 ---
 
-## Stored procedures and the nightly job
+## Stored procedures, nightly job and backups
 
 The stored procedures are written as PostgreSQL functions (`CREATE FUNCTION`) because most of them return a value to the caller, such as the number of units reserved by `allocate()`. PostgreSQL's `CREATE PROCEDURE` cannot return values in the same way.
 
-`expire_units()` is the nightly expiry job (FR-20). Schedule it with cron:
+`expire_units()` is the nightly expiry job (FR-20). The `ops/` folder makes the scheduled jobs runnable:
+
+| Script | What it does |
+|---|---|
+| `ops/nightly_expiry.sh` | Runs `expire_units()` once and logs how many units expired |
+| `ops/backup.sh [dir]` | Daily `pg_dump` (DI-05), then restores it into a scratch database and checks the row counts match |
+| `ops/crontab.example` | Cron entries for both jobs; edit the paths and install with `crontab -e` |
 
 ```bash
-# crontab -e: every night at 00:05
-5 0 * * * PGDATABASE=vytal psql -X -q -c "SELECT vytal.expire_units()"
+PGDATABASE=vytal ./ops/nightly_expiry.sh
+PGDATABASE=vytal ./ops/backup.sh backups
 ```
 
-If the `pg_cron` extension is installed, schedule it inside the database instead:
+If the `pg_cron` extension is installed, the expiry job can be scheduled inside the database instead:
 
 ```sql
 SELECT cron.schedule('vytal-expiry', '5 0 * * *', 'SELECT vytal.expire_units()');
-```
-
----
-
-## Backup and restore (DI-05)
-
-Take a backup every day and test a restore:
-
-```bash
-pg_dump -Fc -d vytal -f vytal_$(date +%F).dump        # daily backup
-
-createdb vytal_restore                                 # test a restore
-pg_restore -d vytal_restore vytal_YYYY-MM-DD.dump
-psql -d vytal_restore -c "SELECT count(*) FROM vytal.donation"
 ```
 
 ---

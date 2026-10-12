@@ -54,7 +54,7 @@ def test_all_times_are_timestamptz(db):
 
 def test_compatibility_reference_data(db):
     counts = dict(db.q("SELECT component_code, count(*) FROM compatibility GROUP BY 1"))
-    assert counts == {"RBC": 27, "PLT": 27, "PLASMA": 36}
+    assert counts == {"RBC": 27, "PLT": 36, "PLASMA": 36}
     rbc = lambda r: {d for (d,) in db.q("SELECT donor_group FROM compatibility WHERE component_code='RBC' AND recipient_group=%s", (r,))}
     assert rbc("O-") == {"O-"}
     assert rbc("A+") == {"O-", "O+", "A-", "A+"}
@@ -62,3 +62,5 @@ def test_compatibility_reference_data(db):
     assert len(rbc("AB+")) == 8
     plasma_for_ab = {d for (d,) in db.q("SELECT donor_group FROM compatibility WHERE component_code='PLASMA' AND recipient_group='AB+'")}
     assert plasma_for_ab == {"AB-", "AB+"}
+    platelets = set(db.q("SELECT recipient_group, donor_group FROM compatibility WHERE component_code='PLT'"))
+    assert platelets == set(db.q("SELECT recipient_group, donor_group FROM compatibility WHERE component_code='PLASMA'"))
