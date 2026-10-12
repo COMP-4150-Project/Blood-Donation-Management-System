@@ -90,6 +90,12 @@ def test_expiry_before_collection_rejected(db):
                                           "VALUES ('E',%s,'RBC','2000-01-01')", (dn,))
 
 
+def test_collected_unit_cannot_be_quarantined(db):
+    """BR-12: lookback quarantine applies to Available and Reserved units only (Table 1)."""
+    unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (db.donate(db.donor()),))
+    assert "invalid unit status" in db.fails("UPDATE blood_unit SET status='Quarantined' WHERE unit_id=%s", (unit,))
+
+
 def test_release_needs_every_test_negative(db):
     dn = db.donate(db.donor())
     unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))
@@ -103,6 +109,7 @@ def test_release_needs_every_test_negative(db):
     (["Expired"], "Available"),
     (["Discarded"], "Available"),
     (["Reserved", "Issued"], "Available"),
+    (["Reserved"], "Expired"),                   # not in Table 1 (BR-12): a reservation is released first
 ])
 def test_invalid_status_changes(db, path, bad):
     unit = db.stock("O+")[0]

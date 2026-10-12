@@ -87,13 +87,12 @@ CREATE FUNCTION check_unit_status() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE ok boolean; bad_or_missing int;
 BEGIN
     IF NEW.status = OLD.status THEN RETURN NEW; END IF;
+    -- exactly the lifecycle in Step 2 Table 1 (BR-12); every other change is refused
     ok := (OLD.status, NEW.status) IN (
-        ('Collected','Available'), ('Collected','Discarded'), ('Collected','Quarantined'), ('Collected','Expired'),
+        ('Collected','Available'), ('Collected','Discarded'), ('Collected','Expired'),
         ('Available','Reserved'), ('Available','Discarded'), ('Available','Expired'), ('Available','Quarantined'),
-        ('Reserved','Available'), ('Reserved','Issued'), ('Reserved','Expired'), ('Reserved','Quarantined'),
+        ('Reserved','Available'), ('Reserved','Issued'), ('Reserved','Quarantined'),
         ('Quarantined','Discarded'), ('Quarantined','Available'));
-    -- Beyond the main lifecycle in Step 2 (FR-14): Collected -> Quarantined lets a lookback pull a bag still awaiting tests,
-    -- and Reserved -> Expired lets a unit that expires while reserved be written off instead of issued.
     IF NOT ok THEN RAISE EXCEPTION 'invalid unit status change % -> %', OLD.status, NEW.status; END IF;
     NEW.status_changed_at := now();
     IF OLD.status = 'Collected' AND NEW.status = 'Available' THEN
@@ -254,12 +253,14 @@ BEGIN
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF st IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
     IF NOT p_cancel THEN
-        -- a reservation that expired before issue is released and its unit expires (counted as wastage)
-        UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired while reserved'
-        WHERE status = 'Reserved' AND expires_at <= now()
-          AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL);
+        -- a reservation that expired before issue is released (Reserved -> Available) and the unit expires (Available -> Expired)
         UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL
-          AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Expired');
+          AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
+        UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now()
+          AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request);
+        UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired while reserved'
+        WHERE status = 'Available' AND expires_at <= now()
+          AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request);
         UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN
             (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL);
         UPDATE request_unit SET issued_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL;
@@ -278,10 +279,12 @@ END $$;
 CREATE FUNCTION expire_units() RETURNS int LANGUAGE plpgsql SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
 DECLARE n int;
 BEGIN
+    -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
     UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
       AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
+    UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now();
     UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
-    WHERE status IN ('Collected','Available','Reserved') AND expires_at <= now();      -- UC-14
+    WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
     GET DIAGNOSTICS n = ROW_COUNT;
     INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'expire_units', n::text);
     RETURN n;
