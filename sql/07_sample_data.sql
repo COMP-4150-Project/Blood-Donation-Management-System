@@ -1,0 +1,462 @@
+-- Vytal sample data: hand-designed, realistic activity over the last ten months at two hospitals and a blood centre.
+-- Every row goes through the real constraints and triggers. Dates are relative to now() so the data never goes stale.
+-- Load with psql (uses one psql variable): every account's password is Vytal-demo-2026, stored as a salted scrypt hash (SE-01).
+SET search_path = vytal;
+\set pw 'scrypt$16384$8$1$c440a8023f149b633cdaf20a8027a3c7$73789a3829ad4e1fe20bae358a0f594ed0d154d08daee72f09c767e0b6722dcd7c3b535cee8fcc0023d432a6688a542a1191bd44739ba681d99396bfc816e5cf'
+
+-- ---------------------------------------------------------------- facilities (FR-35)
+INSERT INTO facility (facility_id, name, facility_type, address, phone, email) VALUES
+    (1, 'Riverside General Hospital', 'Hospital', '1030 Riverside Dr E, Windsor, ON', '519-555-0101', 'bloodbank@riverside.example.ca'),
+    (2, 'Lakeshore Community Hospital', 'Hospital', '250 Lakeshore Blvd, Tecumseh, ON', '519-555-0202', 'lab@lakeshore.example.ca'),
+    (3, 'Vytal Blood Centre Windsor', 'Blood Bank', '3200 Dougall Ave, Windsor, ON', '519-555-0303', 'clinic@vytal.example.ca');
+
+-- ---------------------------------------------------------------- admins and staff (FR-04): each staff member belongs to one facility
+INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_by, created_at) VALUES
+    (1, 'admin@vytal.example.ca', :'pw', 'Sara', 'Haddad', '519-555-0001', 'Admin', NULL, now() - interval '400 days');
+INSERT INTO admin VALUES (1);
+INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_by, created_at) VALUES
+    (2, 'ops@vytal.example.ca', :'pw', 'Daniel', 'Okoro', '519-555-0002', 'Admin', 1, now() - interval '390 days');
+INSERT INTO admin VALUES (2);
+INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_by, created_at) VALUES
+    (3, 'm.lopez@riverside.example.ca', :'pw', 'Maria', 'Lopez', '519-555-0103', 'Staff', 1, now() - interval '380 days'),
+    (4, 'j.campbell@riverside.example.ca', :'pw', 'James', 'Campbell', '519-555-0104', 'Staff', 1, now() - interval '380 days'),
+    (5, 'a.kowalski@lakeshore.example.ca', :'pw', 'Anna', 'Kowalski', '519-555-0205', 'Staff', 1, now() - interval '375 days'),
+    (6, 't.osei@lakeshore.example.ca', :'pw', 'Thomas', 'Osei', '519-555-0206', 'Staff', 2, now() - interval '375 days'),
+    (7, 'r.desai@vytal.example.ca', :'pw', 'Rina', 'Desai', '519-555-0307', 'Staff', 2, now() - interval '370 days'),
+    (8, 'p.murphy@vytal.example.ca', :'pw', 'Patrick', 'Murphy', '519-555-0308', 'Staff', 2, now() - interval '370 days');
+INSERT INTO staff (user_id, facility_id, job_title) VALUES
+    (3, 1, 'Transfusion Nurse'), (4, 1, 'Medical Lab Technologist'),
+    (5, 2, 'Transfusion Nurse'), (6, 2, 'Medical Lab Technologist'),
+    (7, 3, 'Phlebotomist'), (8, 3, 'Clinic Supervisor');
+
+-- ---------------------------------------------------------------- donors (FR-01, FR-09): group verified by staff at the first donation
+INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_at) VALUES
+    (101, 'liam.tremblay@mail.ca', :'pw', 'Liam', 'Tremblay', '519-555-1101', 'Donor', now() - interval '310 days'),
+    (102, 'emma.gagnon@mail.ca', :'pw', 'Emma', 'Gagnon', '519-555-1102', 'Donor', now() - interval '300 days'),
+    (103, 'noah.roy@mail.ca', :'pw', 'Noah', 'Roy', '519-555-1103', 'Donor', now() - interval '320 days'),
+    (104, 'olivia.cote@mail.ca', :'pw', 'Olivia', 'Côté', '519-555-1104', 'Donor', now() - interval '270 days'),
+    (105, 'ethan.bouchard@mail.ca', :'pw', 'Ethan', 'Bouchard', '519-555-1105', 'Donor', now() - interval '350 days'),
+    (106, 'ava.singh@mail.ca', :'pw', 'Ava', 'Singh', '519-555-1106', 'Donor', now() - interval '220 days'),
+    (107, 'lucas.nguyen@mail.ca', :'pw', 'Lucas', 'Nguyen', '519-555-1107', 'Donor', now() - interval '260 days'),
+    (108, 'mia.patel@mail.ca', :'pw', 'Mia', 'Patel', '519-555-1108', 'Donor', now() - interval '80 days'),
+    (109, 'sofia.martin@mail.ca', :'pw', 'Sofia', 'Martin', '519-555-1109', 'Donor', now() - interval '170 days'),
+    (110, 'owen.chen@mail.ca', :'pw', 'Owen', 'Chen', '519-555-1110', 'Donor', now() - interval '40 days'),
+    (111, 'chloe.wilson@mail.ca', :'pw', 'Chloe', 'Wilson', '519-555-1111', 'Donor', now() - interval '330 days'),
+    (112, 'jacob.khan@mail.ca', :'pw', 'Jacob', 'Khan', '519-555-1112', 'Donor', now() - interval '210 days'),
+    (113, 'daniel.brown@mail.ca', :'pw', 'Daniel', 'Brown', '519-555-1113', 'Donor', now() - interval '315 days'),
+    (114, 'zara.ali@mail.ca', :'pw', 'Zara', 'Ali', '519-555-1114', 'Donor', now() - interval '280 days'),
+    (115, 'arjun.mehta@mail.ca', :'pw', 'Arjun', 'Mehta', '519-555-1115', 'Donor', now() - interval '300 days'),
+    (116, 'grace.taylor@mail.ca', :'pw', 'Grace', 'Taylor', '519-555-1116', 'Donor', now() - interval '250 days'),
+    (117, 'omar.ahmed@mail.ca', :'pw', 'Omar', 'Ahmed', '519-555-1117', 'Donor', now() - interval '195 days'),
+    (118, 'mateo.lee@mail.ca', :'pw', 'Mateo', 'Lee', '519-555-1118', 'Donor', now() - interval '340 days'),
+    (119, 'hana.park@mail.ca', :'pw', 'Hana', 'Park', '519-555-1119', 'Donor', now() - interval '230 days'),
+    (120, 'ryan.morin@mail.ca', :'pw', 'Ryan', 'Morin', '519-555-1120', 'Donor', now() - interval '165 days'),
+    (121, 'leah.shah@mail.ca', :'pw', 'Leah', 'Shah', '519-555-1121', 'Donor', now() - interval '280 days'),
+    (122, 'kai.fortin@mail.ca', :'pw', 'Kai', 'Fortin', '519-555-1122', 'Donor', now() - interval '320 days'),
+    (123, 'ines.lavoie@mail.ca', :'pw', 'Ines', 'Lavoie', '519-555-1123', 'Donor', now() - interval '110 days'),
+    (124, 'ravi.joshi@mail.ca', :'pw', 'Ravi', 'Joshi', '519-555-1124', 'Donor', now() - interval '205 days'),
+    (125, 'jonah.pelletier@mail.ca', :'pw', 'Jonah', 'Pelletier', '519-555-1125', 'Donor', now() - interval '290 days'),
+    (126, 'amara.okafor@mail.ca', :'pw', 'Amara', 'Okafor', '519-555-1126', 'Donor', now() - interval '220 days'),
+    (127, 'victor.belanger@mail.ca', :'pw', 'Victor', 'Belanger', '519-555-1127', 'Donor', now() - interval '260 days'),
+    (128, 'elif.demir@mail.ca', :'pw', 'Elif', 'Demir', '519-555-1128', 'Donor', now() - interval '140 days'),
+    (129, 'marcus.reid@mail.ca', :'pw', 'Marcus', 'Reid', '519-555-1129', 'Donor', now() - interval '220 days'),
+    (130, 'priya.iyer@mail.ca', :'pw', 'Priya', 'Iyer', '519-555-1130', 'Donor', now() - interval '170 days'),
+    (131, 'samuel.gauthier@mail.ca', :'pw', 'Samuel', 'Gauthier', '519-555-1131', 'Donor', now() - interval '100 days'),
+    (132, 'nora.hughes@mail.ca', :'pw', 'Nora', 'Hughes', '519-555-1132', 'Donor', now() - interval '190 days'),
+    (133, 'maya.ross@mail.ca', :'pw', 'Maya', 'Ross', '519-555-1133', 'Donor', now() - interval '45 days'),
+    (134, 'theo.dubois@mail.ca', :'pw', 'Theo', 'Dubois', '519-555-1134', 'Donor', now() - interval '55 days'),
+    (135, 'aisha.rahman@mail.ca', :'pw', 'Aisha', 'Rahman', '519-555-1135', 'Donor', now() - interval '15 days'),
+    (136, 'felix.wong@mail.ca', :'pw', 'Felix', 'Wong', '519-555-1136', 'Donor', now() - interval '25 days');
+
+INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group, verified_by, verified_at) VALUES
+    (101, 'D-000101', '1985-03-14', 'M', 91, '201 Ouellette Ave, Windsor, ON', 'O+', 4, now() - interval '290 days' - interval '30 minutes'),
+    (102, 'D-000102', '1992-07-22', 'F', 64, '202 Ouellette Ave, Windsor, ON', 'A+', 3, now() - interval '280 days' - interval '30 minutes'),
+    (103, 'D-000103', '1979-11-02', 'M', 77, '203 Ouellette Ave, Windsor, ON', 'O-', 4, now() - interval '300 days' - interval '30 minutes'),
+    (104, 'D-000104', '1996-01-30', 'F', 90, '204 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '250 days' - interval '30 minutes'),
+    (105, 'D-000105', '1970-06-18', 'M', 63, '205 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '330 days' - interval '30 minutes'),
+    (106, 'D-000106', '1999-09-05', 'F', 76, '206 Ouellette Ave, Windsor, ON', 'B+', 3, now() - interval '200 days' - interval '30 minutes'),
+    (107, 'D-000107', '1988-12-11', 'M', 89, '207 Ouellette Ave, Windsor, ON', 'A-', 4, now() - interval '240 days' - interval '30 minutes'),
+    (108, 'D-000108', '1983-04-27', 'M', 62, '208 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '60 days' - interval '30 minutes'),
+    (109, 'D-000109', '1994-08-16', 'F', 75, '209 Ouellette Ave, Windsor, ON', 'AB+', 4, now() - interval '150 days' - interval '30 minutes'),
+    (110, 'D-000110', '1975-02-09', 'M', 88, '210 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '20 days' - interval '30 minutes'),
+    (111, 'D-000111', '1990-10-03', 'F', 61, '211 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '310 days' - interval '30 minutes'),
+    (112, 'D-000112', '1981-05-21', 'M', 74, '212 Ouellette Ave, Windsor, ON', 'O-', 3, now() - interval '190 days' - interval '30 minutes'),
+    (113, 'D-000113', '1987-07-07', 'M', 87, '213 Ouellette Ave, Windsor, ON', 'O+', 5, now() - interval '295 days' - interval '30 minutes'),
+    (114, 'D-000114', '1995-03-19', 'F', 60, '214 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '260 days' - interval '30 minutes'),
+    (115, 'D-000115', '1968-11-25', 'M', 73, '215 Ouellette Ave, Windsor, ON', 'B+', 6, now() - interval '280 days' - interval '30 minutes'),
+    (116, 'D-000116', '1993-06-12', 'F', 86, '216 Ouellette Ave, Windsor, ON', 'O+', 5, now() - interval '230 days' - interval '30 minutes'),
+    (117, 'D-000117', '1986-09-29', 'M', 59, '217 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '175 days' - interval '30 minutes'),
+    (118, 'D-000118', '1977-01-15', 'M', 72, '218 Ouellette Ave, Windsor, ON', 'O-', 5, now() - interval '320 days' - interval '30 minutes'),
+    (119, 'D-000119', '1998-04-04', 'F', 85, '219 Ouellette Ave, Windsor, ON', 'A-', 6, now() - interval '210 days' - interval '30 minutes'),
+    (120, 'D-000120', '1991-12-20', 'M', 58, '220 Ouellette Ave, Windsor, ON', 'O+', 6, now() - interval '145 days' - interval '30 minutes'),
+    (121, 'D-000121', '1984-08-08', 'F', 71, '221 Ouellette Ave, Windsor, ON', 'AB-', 6, now() - interval '260 days' - interval '30 minutes'),
+    (122, 'D-000122', '1980-02-28', 'M', 84, '222 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '300 days' - interval '30 minutes'),
+    (123, 'D-000123', '2000-05-17', 'F', 97, '223 Ouellette Ave, Windsor, ON', 'O+', 6, now() - interval '90 days' - interval '30 minutes'),
+    (124, 'D-000124', '1989-10-10', 'M', 70, '224 Ouellette Ave, Windsor, ON', 'B-', 6, now() - interval '185 days' - interval '30 minutes'),
+    (125, 'D-000125', '1973-07-31', 'M', 83, '225 Ouellette Ave, Windsor, ON', 'O+', 8, now() - interval '270 days' - interval '30 minutes'),
+    (126, 'D-000126', '1997-11-14', 'F', 96, '226 Ouellette Ave, Windsor, ON', 'A+', 7, now() - interval '200 days' - interval '30 minutes'),
+    (127, 'D-000127', '1982-03-03', 'M', 69, '227 Ouellette Ave, Windsor, ON', 'B+', 4, now() - interval '240 days' - interval '30 minutes'),
+    (128, 'D-000128', '1990-06-06', 'F', 82, '228 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '120 days' - interval '30 minutes'),
+    (129, 'D-000129', '1994-12-01', 'M', 95, '229 Ouellette Ave, Windsor, ON', 'A+', 8, now() - interval '200 days' - interval '30 minutes'),
+    (130, 'D-000130', '1986-01-23', 'F', 68, '230 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '150 days' - interval '30 minutes'),
+    (131, 'D-000131', '1978-09-09', 'M', 81, '231 Ouellette Ave, Windsor, ON', 'AB+', 8, now() - interval '80 days' - interval '30 minutes'),
+    (132, 'D-000132', '1992-02-14', 'F', 94, '232 Ouellette Ave, Windsor, ON', 'O-', 7, now() - interval '170 days' - interval '30 minutes'),
+    -- registered but never donated: under 17, under 50 kg, group unknown, brand new
+    (133, 'D-000133', (CURRENT_DATE - interval '16 years 4 months')::date, 'F', 55, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
+    (134, 'D-000134', '2001-04-12', 'M', 47.5, '234 Ouellette Ave, Windsor, ON', 'O+', NULL, NULL),
+    (135, 'D-000135', '1999-08-30', 'F', 61, '235 Ouellette Ave, Windsor, ON', NULL, NULL, NULL),
+    (136, 'D-000136', '2003-02-02', 'M', 74, '236 Ouellette Ave, Windsor, ON', 'B+', NULL, NULL);
+
+-- History is loaded like a data migration: the audit log (FR-33) starts with today's live actions below.
+ALTER TABLE donor DISABLE TRIGGER audit_donor;
+ALTER TABLE deferral DISABLE TRIGGER audit_deferral;
+ALTER TABLE blood_unit DISABLE TRIGGER audit_unit;
+ALTER TABLE blood_request DISABLE TRIGGER audit_request;
+
+-- ---------------------------------------------------------------- screening before every clinic visit (FR-06)
+INSERT INTO screening (screening_id, donor_id, completed_at) VALUES
+    (1, 105, now() - interval '330 days' - interval '20 minutes'),
+    (2, 118, now() - interval '320 days' - interval '20 minutes'),
+    (3, 111, now() - interval '310 days' - interval '20 minutes'),
+    (4, 103, now() - interval '300 days' - interval '20 minutes'),
+    (5, 122, now() - interval '300 days' - interval '20 minutes'),
+    (6, 113, now() - interval '295 days' - interval '20 minutes'),
+    (7, 101, now() - interval '290 days' - interval '20 minutes'),
+    (8, 102, now() - interval '280 days' - interval '20 minutes'),
+    (9, 115, now() - interval '280 days' - interval '20 minutes'),
+    (10, 125, now() - interval '270 days' - interval '20 minutes'),
+    (11, 105, now() - interval '260 days' - interval '20 minutes'),
+    (12, 114, now() - interval '260 days' - interval '20 minutes'),
+    (13, 121, now() - interval '260 days' - interval '20 minutes'),
+    (14, 104, now() - interval '250 days' - interval '20 minutes'),
+    (15, 118, now() - interval '250 days' - interval '20 minutes'),
+    (16, 107, now() - interval '240 days' - interval '20 minutes'),
+    (17, 127, now() - interval '240 days' - interval '20 minutes'),
+    (18, 103, now() - interval '230 days' - interval '20 minutes'),
+    (19, 116, now() - interval '230 days' - interval '20 minutes'),
+    (20, 122, now() - interval '225 days' - interval '20 minutes'),
+    (21, 113, now() - interval '220 days' - interval '20 minutes'),
+    (22, 111, now() - interval '215 days' - interval '20 minutes'),
+    (23, 101, now() - interval '210 days' - interval '20 minutes'),
+    (24, 119, now() - interval '210 days' - interval '20 minutes'),
+    (25, 106, now() - interval '200 days' - interval '20 minutes'),
+    (26, 115, now() - interval '200 days' - interval '20 minutes'),
+    (27, 126, now() - interval '200 days' - interval '20 minutes'),
+    (28, 129, now() - interval '200 days' - interval '20 minutes'),
+    (29, 112, now() - interval '190 days' - interval '20 minutes'),
+    (30, 124, now() - interval '185 days' - interval '20 minutes'),
+    (31, 102, now() - interval '180 days' - interval '20 minutes'),
+    (32, 123, now() - interval '180 days' - interval '20 minutes'),
+    (33, 125, now() - interval '180 days' - interval '20 minutes'),
+    (34, 117, now() - interval '175 days' - interval '20 minutes'),
+    (35, 132, now() - interval '170 days' - interval '20 minutes'),
+    (36, 103, now() - interval '160 days' - interval '20 minutes'),
+    (37, 114, now() - interval '160 days' - interval '20 minutes'),
+    (38, 127, now() - interval '160 days' - interval '20 minutes'),
+    (39, 109, now() - interval '150 days' - interval '20 minutes'),
+    (40, 113, now() - interval '150 days' - interval '20 minutes'),
+    (41, 130, now() - interval '150 days' - interval '20 minutes'),
+    (42, 120, now() - interval '145 days' - interval '20 minutes'),
+    (43, 101, now() - interval '140 days' - interval '20 minutes'),
+    (44, 107, now() - interval '120 days' - interval '20 minutes'),
+    (45, 116, now() - interval '120 days' - interval '20 minutes'),
+    (46, 128, now() - interval '120 days' - interval '20 minutes'),
+    (47, 122, now() - interval '110 days' - interval '20 minutes'),
+    (48, 126, now() - interval '105 days' - interval '20 minutes'),
+    (49, 104, now() - interval '100 days' - interval '20 minutes'),
+    (50, 112, now() - interval '100 days' - interval '20 minutes'),
+    (51, 125, now() - interval '100 days' - interval '20 minutes'),
+    (52, 117, now() - interval '95 days' - interval '20 minutes'),
+    (53, 102, now() - interval '90 days' - interval '20 minutes'),
+    (54, 123, now() - interval '90 days' - interval '20 minutes'),
+    (55, 131, now() - interval '80 days' - interval '20 minutes'),
+    (56, 120, now() - interval '75 days' - interval '20 minutes'),
+    (57, 101, now() - interval '70 days' - interval '20 minutes'),
+    (58, 108, now() - interval '60 days' - interval '20 minutes'),
+    (59, 113, now() - interval '60 days' - interval '20 minutes'),
+    (60, 132, now() - interval '60 days' - interval '20 minutes'),
+    (61, 114, now() - interval '50 days' - interval '20 minutes'),
+    (62, 108, now() - interval '45 days' - interval '20 minutes'),
+    (63, 119, now() - interval '40 days' - interval '20 minutes'),
+    (64, 122, now() - interval '35 days' - interval '20 minutes'),
+    (65, 107, now() - interval '30 days' - interval '20 minutes'),
+    (66, 108, now() - interval '30 days' - interval '20 minutes'),
+    (67, 129, now() - interval '30 days' - interval '20 minutes'),
+    (68, 116, now() - interval '28 days' - interval '20 minutes'),
+    (69, 103, now() - interval '25 days' - interval '20 minutes'),
+    (70, 125, now() - interval '22 days' - interval '20 minutes'),
+    (71, 104, now() - interval '20 days' - interval '20 minutes'),
+    (72, 110, now() - interval '20 days' - interval '20 minutes'),
+    (73, 124, now() - interval '18 days' - interval '20 minutes'),
+    (74, 106, now() - interval '15 days' - interval '20 minutes'),
+    (75, 128, now() - interval '14 days' - interval '20 minutes'),
+    (76, 120, now() - interval '12 days' - interval '20 minutes'),
+    (77, 117, now() - interval '10 days' - interval '20 minutes'),
+    (78, 112, now() - interval '8 days' - interval '20 minutes'),
+    (79, 127, now() - interval '6 days' - interval '20 minutes'),
+    (80, 110, now() - interval '4 days' - interval '20 minutes');
+
+-- every visit answers all four questions; the answers below are the 'clean' ones (no deferral)
+INSERT INTO screening_answer (screening_id, question_id, answer)
+SELECT s.screening_id, q.question_id, coalesce(q.reason_code = 'UNWELL', FALSE)   -- 'feeling well today?' = yes, the rest = no
+FROM screening s CROSS JOIN screening_question q;
+
+-- ---------------------------------------------------------------- donations (FR-11), oldest first
+INSERT INTO donation (donation_id, donor_id, recorded_by, donation_type_code, donated_at, volume_ml, hemoglobin_gl) VALUES
+    (1, 105, 4, 'WB', now() - interval '330 days', 450, 145),
+    (2, 118, 5, 'WB', now() - interval '320 days', 450, 151),
+    (3, 111, 4, 'WB', now() - interval '310 days', 450, 139),
+    (4, 103, 4, 'WB', now() - interval '300 days', 450, 146),
+    (5, 122, 5, 'WB', now() - interval '300 days', 450, 159),
+    (6, 113, 5, 'WB', now() - interval '295 days', 450, 151),
+    (7, 101, 4, 'WB', now() - interval '290 days', 450, 152),
+    (8, 102, 3, 'WB', now() - interval '280 days', 450, 136),
+    (9, 115, 6, 'WB', now() - interval '280 days', 450, 150),
+    (10, 125, 8, 'WB', now() - interval '270 days', 450, 150),
+    (11, 105, 4, 'WB', now() - interval '260 days', 450, 150),
+    (12, 114, 5, 'WB', now() - interval '260 days', 450, 140),
+    (13, 121, 6, 'WB', now() - interval '260 days', 450, 144),
+    (14, 104, 3, 'WB', now() - interval '250 days', 450, 135),
+    (15, 118, 5, 'WB', now() - interval '250 days', 450, 156),
+    (16, 107, 4, 'WB', now() - interval '240 days', 450, 159),
+    (17, 127, 4, 'WB', now() - interval '240 days', 450, 149),
+    (18, 103, 4, 'WB', now() - interval '230 days', 450, 151),
+    (19, 116, 5, 'WB', now() - interval '230 days', 450, 139),
+    (20, 122, 6, 'WB', now() - interval '225 days', 450, 159),
+    (21, 113, 6, 'WB', now() - interval '220 days', 450, 151),
+    (22, 111, 3, 'WB', now() - interval '215 days', 450, 134),
+    (23, 101, 4, 'WB', now() - interval '210 days', 450, 147),
+    (24, 119, 6, 'WB', now() - interval '210 days', 450, 140),
+    (25, 106, 3, 'WB', now() - interval '200 days', 450, 144),
+    (26, 115, 6, 'WB', now() - interval '200 days', 450, 145),
+    (27, 126, 7, 'WB', now() - interval '200 days', 450, 134),
+    (28, 129, 8, 'WB', now() - interval '200 days', 450, 153),
+    (29, 112, 3, 'WB', now() - interval '190 days', 450, 159),
+    (30, 124, 6, 'WB', now() - interval '185 days', 450, 148),
+    (31, 102, 3, 'WB', now() - interval '180 days', 450, 141),
+    (32, 125, 8, 'WB', now() - interval '180 days', 450, 150),
+    (33, 117, 5, 'WB', now() - interval '175 days', 450, 149),
+    (34, 132, 7, 'WB', now() - interval '170 days', 450, 146),
+    (35, 103, 4, 'WB', now() - interval '160 days', 450, 156),
+    (36, 114, 5, 'WB', now() - interval '160 days', 450, 145),
+    (37, 127, 4, 'WB', now() - interval '160 days', 450, 159),
+    (38, 109, 4, 'WB', now() - interval '150 days', 450, 145),
+    (39, 113, 6, 'WB', now() - interval '150 days', 450, 156),
+    (40, 130, 7, 'WB', now() - interval '150 days', 450, 142),
+    (41, 120, 6, 'WB', now() - interval '145 days', 450, 155),
+    (42, 101, 4, 'WB', now() - interval '140 days', 450, 152),
+    (43, 107, 4, 'WB', now() - interval '120 days', 450, 159),
+    (44, 116, 5, 'WB', now() - interval '120 days', 450, 134),
+    (45, 128, 7, 'WB', now() - interval '120 days', 450, 143),
+    (46, 122, 5, 'WB', now() - interval '110 days', 450, 149),
+    (47, 126, 8, 'WB', now() - interval '105 days', 450, 144),
+    (48, 112, 3, 'WB', now() - interval '100 days', 450, 159),
+    (49, 125, 8, 'WB', now() - interval '100 days', 450, 145),
+    (50, 117, 5, 'WB', now() - interval '95 days', 450, 159),
+    (51, 102, 3, 'WB', now() - interval '90 days', 450, 141),
+    (52, 123, 6, 'WB', now() - interval '90 days', 450, 138),
+    (53, 131, 8, 'WB', now() - interval '80 days', 450, 152),
+    (54, 120, 6, 'WB', now() - interval '75 days', 450, 145),
+    (55, 101, 4, 'WB', now() - interval '70 days', 450, 157),
+    (56, 108, 3, 'PLS', now() - interval '60 days', 600, 151),
+    (57, 113, 6, 'WB', now() - interval '60 days', 450, 156),
+    (58, 132, 7, 'WB', now() - interval '60 days', 450, 141),
+    (59, 114, 5, 'WB', now() - interval '50 days', 450, 140),
+    (60, 108, 4, 'PLS', now() - interval '45 days', 600, 151),
+    (61, 119, 6, 'WB', now() - interval '40 days', 450, 135),
+    (62, 122, 6, 'WB', now() - interval '35 days', 450, 149),
+    (63, 107, 4, 'WB', now() - interval '30 days', 450, 159),
+    (64, 108, 3, 'PLS', now() - interval '30 days', 600, 151),
+    (65, 116, 5, 'WB', now() - interval '28 days', 450, 132),
+    (66, 103, 3, 'WB', now() - interval '25 days', 450, 156),
+    (67, 125, 8, 'WB', now() - interval '22 days', 450, 157),
+    (68, 104, 3, 'WB', now() - interval '20 days', 450, 145),
+    (69, 110, 3, 'PLT', now() - interval '20 days', 600, 155),
+    (70, 124, 5, 'WB', now() - interval '18 days', 450, 146),
+    (71, 106, 4, 'WB', now() - interval '15 days', 450, 139),
+    (72, 128, 7, 'WB', now() - interval '14 days', 450, 142),
+    (73, 120, 5, 'WB', now() - interval '12 days', 450, 157),
+    (74, 117, 6, 'WB', now() - interval '10 days', 450, 149),
+    (75, 112, 3, 'WB', now() - interval '8 days', 450, 157),
+    (76, 127, 4, 'WB', now() - interval '6 days', 450, 155),
+    (77, 110, 3, 'PLT', now() - interval '4 days', 600, 154);
+
+-- three visits ended in a deferral from the questionnaire (TRAVEL, UNWELL, TATTOO); recorded after the donation batch
+-- because a still-active deferral would otherwise block that donor's older donations in the same INSERT
+UPDATE screening_answer SET answer = TRUE WHERE screening_id = 32 AND question_id = 2;
+UPDATE screening_answer SET answer = FALSE WHERE screening_id = 49 AND question_id = 3;
+UPDATE screening_answer SET answer = TRUE WHERE screening_id = 67 AND question_id = 1;
+INSERT INTO deferral (donor_id, reason_code, start_date, end_date, screening_id) VALUES
+    (123, 'TRAVEL', (now() - interval '180 days')::date, (now() - interval '180 days')::date + 90, 32),
+    (104, 'UNWELL', (now() - interval '100 days')::date, (now() - interval '100 days')::date + 1, 49),
+    (129, 'TATTOO', (now() - interval '30 days')::date, (now() - interval '30 days')::date + 90, 67);
+
+-- ---------------------------------------------------------------- component units (FR-12); expiry and location are set by trigger
+INSERT INTO blood_unit (unit_id, donation_id, component_code) VALUES
+    ('U1-RBC', 1, 'RBC'), ('U1-PLASMA', 1, 'PLASMA'), ('U2-RBC', 2, 'RBC'),
+    ('U2-PLASMA', 2, 'PLASMA'), ('U3-RBC', 3, 'RBC'), ('U3-PLASMA', 3, 'PLASMA'),
+    ('U4-RBC', 4, 'RBC'), ('U4-PLASMA', 4, 'PLASMA'), ('U5-RBC', 5, 'RBC'),
+    ('U5-PLASMA', 5, 'PLASMA'), ('U6-RBC', 6, 'RBC'), ('U6-PLASMA', 6, 'PLASMA'),
+    ('U7-RBC', 7, 'RBC'), ('U7-PLASMA', 7, 'PLASMA'), ('U8-RBC', 8, 'RBC'),
+    ('U8-PLASMA', 8, 'PLASMA'), ('U9-RBC', 9, 'RBC'), ('U9-PLASMA', 9, 'PLASMA'),
+    ('U10-RBC', 10, 'RBC'), ('U10-PLASMA', 10, 'PLASMA'), ('U11-RBC', 11, 'RBC'),
+    ('U11-PLASMA', 11, 'PLASMA'), ('U12-RBC', 12, 'RBC'), ('U12-PLASMA', 12, 'PLASMA'),
+    ('U13-RBC', 13, 'RBC'), ('U13-PLASMA', 13, 'PLASMA'), ('U14-RBC', 14, 'RBC'),
+    ('U14-PLASMA', 14, 'PLASMA'), ('U15-RBC', 15, 'RBC'), ('U15-PLASMA', 15, 'PLASMA'),
+    ('U16-RBC', 16, 'RBC'), ('U16-PLASMA', 16, 'PLASMA'), ('U17-RBC', 17, 'RBC'),
+    ('U17-PLASMA', 17, 'PLASMA'), ('U18-RBC', 18, 'RBC'), ('U18-PLASMA', 18, 'PLASMA'),
+    ('U19-RBC', 19, 'RBC'), ('U19-PLASMA', 19, 'PLASMA'), ('U20-RBC', 20, 'RBC'),
+    ('U20-PLASMA', 20, 'PLASMA'), ('U21-RBC', 21, 'RBC'), ('U21-PLASMA', 21, 'PLASMA'),
+    ('U22-RBC', 22, 'RBC'), ('U22-PLASMA', 22, 'PLASMA'), ('U23-RBC', 23, 'RBC'),
+    ('U23-PLASMA', 23, 'PLASMA'), ('U24-RBC', 24, 'RBC'), ('U24-PLASMA', 24, 'PLASMA'),
+    ('U25-RBC', 25, 'RBC'), ('U25-PLASMA', 25, 'PLASMA'), ('U26-RBC', 26, 'RBC'),
+    ('U26-PLASMA', 26, 'PLASMA'), ('U27-RBC', 27, 'RBC'), ('U27-PLASMA', 27, 'PLASMA'),
+    ('U28-RBC', 28, 'RBC'), ('U28-PLASMA', 28, 'PLASMA'), ('U29-RBC', 29, 'RBC'),
+    ('U29-PLASMA', 29, 'PLASMA'), ('U30-RBC', 30, 'RBC'), ('U30-PLASMA', 30, 'PLASMA'),
+    ('U31-RBC', 31, 'RBC'), ('U31-PLASMA', 31, 'PLASMA'), ('U32-RBC', 32, 'RBC'),
+    ('U32-PLASMA', 32, 'PLASMA'), ('U33-RBC', 33, 'RBC'), ('U33-PLASMA', 33, 'PLASMA'),
+    ('U34-RBC', 34, 'RBC'), ('U34-PLASMA', 34, 'PLASMA'), ('U35-RBC', 35, 'RBC'),
+    ('U35-PLASMA', 35, 'PLASMA'), ('U36-RBC', 36, 'RBC'), ('U36-PLASMA', 36, 'PLASMA'),
+    ('U37-RBC', 37, 'RBC'), ('U37-PLASMA', 37, 'PLASMA'), ('U38-RBC', 38, 'RBC'),
+    ('U38-PLASMA', 38, 'PLASMA'), ('U39-RBC', 39, 'RBC'), ('U39-PLASMA', 39, 'PLASMA'),
+    ('U40-RBC', 40, 'RBC'), ('U40-PLASMA', 40, 'PLASMA'), ('U41-RBC', 41, 'RBC'),
+    ('U41-PLASMA', 41, 'PLASMA'), ('U42-RBC', 42, 'RBC'), ('U42-PLASMA', 42, 'PLASMA'),
+    ('U42-PLT', 42, 'PLT'), ('U43-RBC', 43, 'RBC'), ('U43-PLASMA', 43, 'PLASMA'),
+    ('U44-RBC', 44, 'RBC'), ('U44-PLASMA', 44, 'PLASMA'), ('U45-RBC', 45, 'RBC'),
+    ('U45-PLASMA', 45, 'PLASMA'), ('U46-RBC', 46, 'RBC'), ('U46-PLASMA', 46, 'PLASMA'),
+    ('U47-RBC', 47, 'RBC'), ('U47-PLASMA', 47, 'PLASMA'), ('U48-RBC', 48, 'RBC'),
+    ('U48-PLASMA', 48, 'PLASMA'), ('U49-RBC', 49, 'RBC'), ('U49-PLASMA', 49, 'PLASMA'),
+    ('U50-RBC', 50, 'RBC'), ('U50-PLASMA', 50, 'PLASMA'), ('U51-RBC', 51, 'RBC'),
+    ('U51-PLASMA', 51, 'PLASMA'), ('U52-RBC', 52, 'RBC'), ('U52-PLASMA', 52, 'PLASMA'),
+    ('U53-RBC', 53, 'RBC'), ('U53-PLASMA', 53, 'PLASMA'), ('U54-RBC', 54, 'RBC'),
+    ('U54-PLASMA', 54, 'PLASMA'), ('U55-RBC', 55, 'RBC'), ('U55-PLASMA', 55, 'PLASMA'),
+    ('U56-PLASMA', 56, 'PLASMA'), ('U57-RBC', 57, 'RBC'), ('U57-PLASMA', 57, 'PLASMA'),
+    ('U57-PLT', 57, 'PLT'), ('U58-RBC', 58, 'RBC'), ('U58-PLASMA', 58, 'PLASMA'),
+    ('U59-RBC', 59, 'RBC'), ('U59-PLASMA', 59, 'PLASMA'), ('U60-PLASMA', 60, 'PLASMA'),
+    ('U61-RBC', 61, 'RBC'), ('U61-PLASMA', 61, 'PLASMA'), ('U62-RBC', 62, 'RBC'),
+    ('U62-PLASMA', 62, 'PLASMA'), ('U63-RBC', 63, 'RBC'), ('U63-PLASMA', 63, 'PLASMA'),
+    ('U64-PLASMA', 64, 'PLASMA'), ('U65-RBC', 65, 'RBC'), ('U65-PLASMA', 65, 'PLASMA'),
+    ('U66-RBC', 66, 'RBC'), ('U66-PLASMA', 66, 'PLASMA'), ('U67-RBC', 67, 'RBC'),
+    ('U67-PLASMA', 67, 'PLASMA'), ('U68-RBC', 68, 'RBC'), ('U68-PLASMA', 68, 'PLASMA'),
+    ('U68-PLT', 68, 'PLT'), ('U69-PLT', 69, 'PLT'), ('U70-RBC', 70, 'RBC'),
+    ('U70-PLASMA', 70, 'PLASMA'), ('U71-RBC', 71, 'RBC'), ('U71-PLASMA', 71, 'PLASMA'),
+    ('U72-RBC', 72, 'RBC'), ('U72-PLASMA', 72, 'PLASMA'), ('U73-RBC', 73, 'RBC'),
+    ('U73-PLASMA', 73, 'PLASMA'), ('U74-RBC', 74, 'RBC'), ('U74-PLASMA', 74, 'PLASMA'),
+    ('U74-PLT', 74, 'PLT'), ('U75-RBC', 75, 'RBC'), ('U75-PLASMA', 75, 'PLASMA'),
+    ('U76-RBC', 76, 'RBC'), ('U76-PLASMA', 76, 'PLASMA'), ('U77-PLT', 77, 'PLT');
+
+-- ---------------------------------------------------------------- test results, 12 hours after each donation (FR-13)
+INSERT INTO test_result (donation_id, test_code, result, tested_at)
+SELECT d.donation_id, t.test_code, 'Negative', d.donated_at + interval '12 hours'
+FROM donation d CROSS JOIN test_type t WHERE d.donation_id <> 76;
+-- every unit whose tests all passed is released to stock (the status trigger checks the tests); this happens
+-- before donor 127's positive result below, as it did in time, so their earlier units were already on the shelf
+UPDATE blood_unit SET status = 'Available' WHERE status = 'Collected' AND donation_id <> 76;
+
+-- donor 127's latest donation tests positive for hepatitis B: the trigger discards its units, flags the donor and notifies admins
+INSERT INTO test_result (donation_id, test_code, result, tested_at)
+SELECT 76, test_code, CASE test_code WHEN 'HBV' THEN 'Positive' ELSE 'Negative' END, now() - interval '5 days 12:00' FROM test_type;
+INSERT INTO deferral (donor_id, reason_code, start_date, recorded_by) VALUES (127, 'HBV', (now() - interval '5 days')::date, 3);
+
+-- a staff-recorded deferral: hemoglobin too low at the clinic 10 days ago
+INSERT INTO deferral (donor_id, reason_code, start_date, end_date, recorded_by) VALUES (130, 'LOWHB', (now() - interval '10 days')::date, (now() - interval '10 days')::date + 56, 7);
+
+
+-- ---------------------------------------------------------------- past requests (FR-22..28): created, reserved, issued, closed
+INSERT INTO blood_request (request_id, requested_by, patient_ref, recipient_group, component_code, units_requested, urgency,
+                           required_by, status, created_at, closed_at) VALUES
+    (1, 6, 'P-24037', 'O+', 'RBC', 2, 'Routine', now() - interval '285 days' + interval '48 hours', 'Fulfilled', now() - interval '285 days', now() - interval '285 days' + interval '20 hours'),
+    (2, 3, 'P-24074', 'O+', 'RBC', 2, 'Routine', now() - interval '275 days' + interval '48 hours', 'Fulfilled', now() - interval '275 days', now() - interval '275 days' + interval '20 hours'),
+    (3, 4, 'P-24111', 'A+', 'RBC', 1, 'Urgent', now() - interval '262 days' + interval '6 hours', 'Fulfilled', now() - interval '262 days', now() - interval '262 days' + interval '4 hours'),
+    (4, 5, 'P-24148', 'A+', 'RBC', 1, 'Routine', now() - interval '240 days' + interval '48 hours', 'Fulfilled', now() - interval '240 days', now() - interval '240 days' + interval '20 hours'),
+    (5, 4, 'P-24185', 'O-', 'RBC', 1, 'Emergency', now() - interval '225 days' + interval '1 hours', 'Fulfilled', now() - interval '225 days', now() - interval '225 days' + interval '1 hours'),
+    (6, 5, 'P-24222', 'O+', 'RBC', 1, 'Urgent', now() - interval '212 days' + interval '6 hours', 'Fulfilled', now() - interval '212 days', now() - interval '212 days' + interval '4 hours'),
+    (7, 4, 'P-24259', 'A+', 'RBC', 2, 'Routine', now() - interval '205 days' + interval '48 hours', 'Fulfilled', now() - interval '205 days', now() - interval '205 days' + interval '20 hours'),
+    (8, 5, 'P-24296', 'A-', 'RBC', 1, 'Routine', now() - interval '190 days' + interval '48 hours', 'Fulfilled', now() - interval '190 days', now() - interval '190 days' + interval '20 hours'),
+    (9, 4, 'P-24333', NULL, 'RBC', 2, 'Emergency', now() - interval '170 days' + interval '1 hours', 'Partially Fulfilled', now() - interval '170 days', now() - interval '170 days' + interval '1 hours'),
+    (10, 3, 'P-24370', 'B+', 'PLASMA', 1, 'Routine', now() - interval '150 days' + interval '48 hours', 'Fulfilled', now() - interval '150 days', now() - interval '150 days' + interval '20 hours'),
+    (11, 6, 'P-24407', 'O+', 'RBC', 2, 'Routine', now() - interval '140 days' + interval '48 hours', 'Fulfilled', now() - interval '140 days', now() - interval '140 days' + interval '20 hours'),
+    (12, 3, 'P-24444', 'O+', 'RBC', 2, 'Urgent', now() - interval '130 days' + interval '6 hours', 'Fulfilled', now() - interval '130 days', now() - interval '130 days' + interval '4 hours'),
+    (13, 4, 'P-24481', 'A-', 'RBC', 1, 'Routine', now() - interval '110 days' + interval '48 hours', 'Fulfilled', now() - interval '110 days', now() - interval '110 days' + interval '20 hours'),
+    (14, 5, 'P-24518', 'A+', 'RBC', 2, 'Urgent', now() - interval '100 days' + interval '6 hours', 'Fulfilled', now() - interval '100 days', now() - interval '100 days' + interval '4 hours'),
+    (15, 4, 'P-24555', 'AB+', 'PLASMA', 2, 'Routine', now() - interval '85 days' + interval '48 hours', 'Partially Fulfilled', now() - interval '85 days', now() - interval '85 days' + interval '20 hours'),
+    (16, 5, 'P-24592', 'B+', 'PLASMA', 1, 'Routine', now() - interval '70 days' + interval '48 hours', 'Fulfilled', now() - interval '70 days', now() - interval '70 days' + interval '20 hours'),
+    (17, 4, 'P-24629', 'O+', 'RBC', 1, 'Routine', now() - interval '62 days' + interval '48 hours', 'Fulfilled', now() - interval '62 days', now() - interval '62 days' + interval '20 hours'),
+    (18, 3, 'P-24666', 'A+', 'RBC', 1, 'Urgent', now() - interval '50 days' + interval '6 hours', 'Fulfilled', now() - interval '50 days', now() - interval '50 days' + interval '4 hours'),
+    (19, 6, 'P-24703', 'O+', 'RBC', 1, 'Emergency', now() - interval '45 days' + interval '1 hours', 'Fulfilled', now() - interval '45 days', now() - interval '45 days' + interval '1 hours'),
+    (20, 5, 'P-24740', 'A+', 'RBC', 1, 'Routine', now() - interval '30 days' + interval '48 hours', 'Fulfilled', now() - interval '30 days', now() - interval '30 days' + interval '20 hours'),
+    (21, 4, 'P-24777', 'O+', 'PLT', 1, 'Urgent', now() - interval '18 days' + interval '6 hours', 'Fulfilled', now() - interval '18 days', now() - interval '18 days' + interval '4 hours'),
+    (22, 5, 'P-24814', 'O-', 'RBC', 1, 'Emergency', now() - interval '14 days' + interval '1 hours', 'Partially Fulfilled', now() - interval '14 days', now() - interval '14 days' + interval '1 hours');
+INSERT INTO request_unit (request_id, unit_id, reserved_at, issued_at) VALUES
+    (1, 'U6-RBC', now() - interval '285 days' + interval '5 minutes', now() - interval '285 days' + interval '20 hours'),
+    (1, 'U2-RBC', now() - interval '285 days' + interval '5 minutes', now() - interval '285 days' + interval '20 hours'),
+    (2, 'U7-RBC', now() - interval '275 days' + interval '5 minutes', now() - interval '275 days' + interval '20 hours'),
+    (2, 'U4-RBC', now() - interval '275 days' + interval '5 minutes', now() - interval '275 days' + interval '20 hours'),
+    (3, 'U8-RBC', now() - interval '262 days' + interval '5 minutes', now() - interval '262 days' + interval '4 hours'),
+    (4, 'U12-RBC', now() - interval '240 days' + interval '5 minutes', now() - interval '240 days' + interval '20 hours'),
+    (5, 'U18-RBC', now() - interval '225 days' + interval '5 minutes', now() - interval '225 days' + interval '1 hours'),
+    (6, 'U19-RBC', now() - interval '212 days' + interval '5 minutes', now() - interval '212 days' + interval '4 hours'),
+    (7, 'U22-RBC', now() - interval '205 days' + interval '5 minutes', now() - interval '205 days' + interval '20 hours'),
+    (7, 'U16-RBC', now() - interval '205 days' + interval '5 minutes', now() - interval '205 days' + interval '20 hours'),
+    (8, 'U24-RBC', now() - interval '190 days' + interval '5 minutes', now() - interval '190 days' + interval '20 hours'),
+    (9, 'U29-RBC', now() - interval '170 days' + interval '5 minutes', now() - interval '170 days' + interval '1 hours'),
+    (10, 'U17-PLASMA', now() - interval '150 days' + interval '5 minutes', now() - interval '150 days' + interval '20 hours'),
+    (11, 'U39-RBC', now() - interval '140 days' + interval '5 minutes', now() - interval '140 days' + interval '20 hours'),
+    (11, 'U41-RBC', now() - interval '140 days' + interval '5 minutes', now() - interval '140 days' + interval '20 hours'),
+    (12, 'U42-RBC', now() - interval '130 days' + interval '5 minutes', now() - interval '130 days' + interval '4 hours'),
+    (12, 'U35-RBC', now() - interval '130 days' + interval '5 minutes', now() - interval '130 days' + interval '4 hours'),
+    (13, 'U43-RBC', now() - interval '110 days' + interval '5 minutes', now() - interval '110 days' + interval '20 hours'),
+    (14, 'U46-RBC', now() - interval '100 days' + interval '5 minutes', now() - interval '100 days' + interval '4 hours'),
+    (14, 'U44-RBC', now() - interval '100 days' + interval '5 minutes', now() - interval '100 days' + interval '4 hours'),
+    (15, 'U38-PLASMA', now() - interval '85 days' + interval '5 minutes', now() - interval '85 days' + interval '20 hours'),
+    (16, 'U9-PLASMA', now() - interval '70 days' + interval '5 minutes', now() - interval '70 days' + interval '20 hours'),
+    (17, 'U55-RBC', now() - interval '62 days' + interval '5 minutes', now() - interval '62 days' + interval '20 hours'),
+    (18, 'U51-RBC', now() - interval '50 days' + interval '5 minutes', now() - interval '50 days' + interval '4 hours'),
+    (19, 'U54-RBC', now() - interval '45 days' + interval '5 minutes', now() - interval '45 days' + interval '1 hours'),
+    (20, 'U59-RBC', now() - interval '30 days' + interval '5 minutes', now() - interval '30 days' + interval '20 hours'),
+    (21, 'U68-PLT', now() - interval '18 days' + interval '5 minutes', now() - interval '18 days' + interval '4 hours');
+UPDATE blood_unit SET status = 'Reserved' WHERE unit_id IN (SELECT unit_id FROM request_unit);
+UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN (SELECT unit_id FROM request_unit);
+
+ALTER TABLE donor ENABLE TRIGGER audit_donor;
+ALTER TABLE deferral ENABLE TRIGGER audit_deferral;
+ALTER TABLE blood_unit ENABLE TRIGGER audit_unit;
+ALTER TABLE blood_request ENABLE TRIGGER audit_request;
+
+-- ================================================================ today, through the stored procedures
+SELECT set_config('vytal.user_id', '1', false);
+
+-- nightly job (FR-20): units past expiry become Expired and are recorded as wastage; wastage is dated at the expiry time
+SELECT expire_units();
+UPDATE wastage_record w SET wasted_at = u.expires_at FROM blood_unit u WHERE u.unit_id = w.unit_id AND w.cause = 'Expired';
+UPDATE wastage_record w SET wasted_at = t.tested_at
+FROM blood_unit u JOIN test_result t ON t.donation_id = u.donation_id AND t.result = 'Positive'
+WHERE u.unit_id = w.unit_id AND w.cause = 'Discarded';
+
+-- minimum stock levels for red cells and platelets at both hospitals (FR-18); the threshold trigger opens alerts at once (FR-19)
+INSERT INTO stock_threshold (facility_id, blood_group, component_code, min_units) VALUES
+    (1, 'O+', 'RBC', 4), (1, 'A+', 'RBC', 3), (1, 'O-', 'RBC', 2), (1, 'B+', 'RBC', 1), (1, 'A-', 'RBC', 1), (1, 'O+', 'PLT', 1),
+    (2, 'O+', 'RBC', 4), (2, 'A+', 'RBC', 3), (2, 'O-', 'RBC', 2), (2, 'B+', 'RBC', 1), (2, 'A-', 'RBC', 1), (2, 'O+', 'PLT', 1);
+
+-- open requests, reserved by allocate() (FR-22, FR-23); the unknown-group trauma case can only take O- red cells
+INSERT INTO blood_request (request_id, requested_by, patient_ref, recipient_group, component_code, units_requested, urgency, required_by) VALUES
+    (23, 3, 'P-31042', NULL, 'RBC', 2, 'Emergency', now() + interval '1 hour'),
+    (24, 4, 'P-31057', 'A+', 'RBC', 2, 'Urgent', now() + interval '6 hours'),
+    (25, 5, 'P-31063', 'O+', 'PLASMA', 2, 'Routine', now() + interval '2 days'),
+    (26, 6, 'P-31078', 'AB-', 'RBC', 3, 'Routine', now() + interval '3 days');
+SELECT request_id, allocate(request_id) AS reserved FROM blood_request WHERE status = 'Open' ORDER BY request_id;
+
+-- the AB- request cannot be covered from stock, so staff call eligible compatible donors (FR-25, FR-26) and two answer (FR-27)
+SELECT send_donation_call(26, 5, 'A patient at Lakeshore Community Hospital needs blood. Please book a donation if you can.');
+SELECT respond_to_call(1, 118, TRUE);
+SELECT respond_to_call(1, 121, FALSE);
+
+-- lookback (FR-30, FR-31): donor 127 tested positive, so every unit of theirs still on a shelf is quarantined
+SELECT quarantine_donor(127);
+
+-- keep the sequences ahead of the explicit ids used above
+SELECT setval(pg_get_serial_sequence('vytal.user_account', 'user_id'), (SELECT max(user_id) FROM user_account));
+SELECT setval(pg_get_serial_sequence('vytal.facility', 'facility_id'), (SELECT max(facility_id) FROM facility));
+SELECT setval(pg_get_serial_sequence('vytal.screening', 'screening_id'), (SELECT max(screening_id) FROM screening));
+SELECT setval(pg_get_serial_sequence('vytal.donation', 'donation_id'), (SELECT max(donation_id) FROM donation));
+SELECT setval(pg_get_serial_sequence('vytal.blood_request', 'request_id'), (SELECT max(request_id) FROM blood_request));
