@@ -145,7 +145,7 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **142 passed, 3 skipped**.
+Expected: **145 passed, 3 skipped**.
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
 - The 3 skipped tests in `tests/test_schema.py` compare the schema with the Step 3 design sources, which are not in this repository. This is expected.

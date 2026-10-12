@@ -326,11 +326,12 @@ for name, qq in load().items():
 page_break()
 H("6. Efficiency")
 TARGETS = {"PR-01": "< 2 s", "PR-02": "< 1 s", "PR-03": "< 3 s"}
-P(f"Timings come from a much larger dataset made by bench/bulk_data.py ({bench_rows}), so that indexes matter. Each figure is the "
-  "median of five warm runs, measured once without the indexes in sql/04_indexes.sql and once with them; every run happens inside a "
-  "transaction that is rolled back. The Step 2 performance targets PR-01 to PR-03 are met with a wide margin. PR-05 (the nightly "
-  "expiry over 50,000 units) and PR-06 (load) were not stress-tested at full scale; the 50-session concurrency test in Section 8 covers "
-  "PR-06's correctness.")
+P(f"The Step 4 brief evaluates efficiency but does not ask for a benchmark, so this section is a light check rather than a load "
+  f"test. To make index choices visible, bench/bulk_data.py generated a larger dataset than the sample data ({bench_rows}). Each "
+  "figure is the median of five warm runs, measured once without the indexes in sql/04_indexes.sql and once with them, inside a "
+  "transaction that is rolled back. PR-01 to PR-03 are met with a wide margin. This dataset is smaller than the 10,000 donors, "
+  "50,000 donations and 50,000 units that Step 2 assumes, and PR-05 (expiring 50,000 units in 60 seconds) was not timed. PR-04 "
+  "(alert in the same transaction) and PR-06 (50 concurrent users) are covered by tests in Section 8.")
 
 
 def plan_change(b, a):
@@ -339,8 +340,9 @@ def plan_change(b, a):
 
 
 table(["Operation", "Target", "Before (ms)", "After (ms)", "New index use"],
-      [(op, TARGETS.get(op.split()[0], ""), f"{b['ms']:.1f}", f"{bench['after'][op]['ms']:.1f}", plan_change(b, bench["after"][op]))
-       for op, b in bench["before"].items()], [2.3, 0.6, 0.8, 0.8, 2.0], 8)
+      [(op, TARGETS.get(op.split()[0], ""), f"{bench['before'][op]['ms']:.1f}" if op in bench["before"] else "n/a",
+        f"{a['ms']:.1f}", plan_change(bench["before"].get(op, {}), a)) for op, a in bench["after"].items()],
+      [2.3, 0.6, 0.8, 0.8, 2.0], 8)
 H("Indexes kept", 2)
 P("PostgreSQL does not index foreign-key columns on its own. Each index below is kept because a measured query or procedure uses it; "
   "candidates that did not help were dropped.")

@@ -1,4 +1,5 @@
 """sql/07_sample_data.sql is internally consistent: every invariant a real clinic's data must satisfy holds."""
+from conftest import PREFIX, build, connect, drop
 
 
 def test_row_volumes(sdb):
@@ -60,3 +61,19 @@ def test_history_timestamps_are_in_the_past_and_ordered(sdb):
     for table, col in (("test_result", "tested_at"), ("blood_request", "closed_at"), ("request_unit", "issued_at"),
                        ("blood_unit", "status_changed_at"), ("wastage_record", "wasted_at")):
         assert sdb.one(f"SELECT count(*) FROM {table} WHERE {col} > now()") == 0, table
+
+
+def test_sample_data_is_reproducible(seeded_db):
+    """MA-03: loading the sample data twice gives identical data (dates are relative to the load time)."""
+    other = build(PREFIX + "_seeded_again", with_data=True)
+    sig = ("SELECT md5(string_agg(concat_ws('|', o.donor_code, o.blood_group, CASE WHEN o.next_eligible_date = 'infinity' THEN -1 ELSE o.next_eligible_date - CURRENT_DATE END, d.donation_type_code, "
+           "u.unit_id, u.status, ru.request_id), ',' ORDER BY o.donor_code, d.donation_id, u.unit_id, ru.request_id)) "
+           "FROM donor o LEFT JOIN donation d ON d.donor_id = o.user_id LEFT JOIN blood_unit u USING (donation_id) "
+           "LEFT JOIN request_unit ru USING (unit_id)")
+    a, b = connect(seeded_db), connect(other)
+    try:
+        assert a.execute(sig).fetchone() == b.execute(sig).fetchone()
+    finally:
+        a.close()
+        b.close()
+        drop(other)

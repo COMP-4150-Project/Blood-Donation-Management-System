@@ -23,6 +23,11 @@ def build(dbname, with_data=False):
 
 
 
+def drop(dbname):
+    with psycopg.connect(dbname="postgres", autocommit=True) as admin:
+        admin.execute(f'DROP DATABASE IF EXISTS "{dbname}" WITH (FORCE)')
+
+
 def connect(dbname, **kw):
     con = psycopg.connect(dbname=dbname, **kw)
     con.execute("SET search_path = vytal")

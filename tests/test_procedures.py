@@ -107,8 +107,14 @@ def test_partial_fulfilment(db):
 # ---------------------------------------------------------------------- expire_units() FR-20 / quarantine_donor() FR-31
 def test_nightly_expiry_releases_reservations_and_logs_the_run(db):
     plt = db.stock("A+", comps=("PLT",), days_ago=6)[0]
-    assert db.one("SELECT expire_units()") >= 1
-    assert db.one("SELECT status FROM blood_unit WHERE unit_id=%s", (plt,)) == "Expired"
+    held = db.stock("O+")[0]
+    r = db.request("O+")
+    db.q("SELECT allocate(%s)", (r,))
+    db.q("UPDATE blood_unit SET expires_at = now() - interval '1 minute' WHERE unit_id=%s", (held,))
+    assert db.one("SELECT expire_units()") == 2
+    assert {u: s for u, s in db.q("SELECT unit_id, status FROM blood_unit WHERE unit_id = ANY(%s)", ([plt, held],))} == \
+        {plt: "Expired", held: "Expired"}
+    assert db.one("SELECT units_reserved FROM v_request_status WHERE request_id=%s", (r,)) == 0
     assert db.one("SELECT cause FROM wastage_record WHERE unit_id=%s", (plt,)) == "Expired"
     assert db.one("SELECT count(*) FROM audit_log WHERE action='JOB' AND record_id='expire_units'") == 1
 
