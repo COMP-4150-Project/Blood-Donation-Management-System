@@ -32,6 +32,15 @@ def test_tables_columns_and_keys_match_design(db, design):
                   "AND constraint_type='FOREIGN KEY'") == sum(len(r["fks"]) for r in design)
 
 
+@needs_design
+def test_nullability_matches_design(db):
+    from schema import R, NULLABLE
+    designed = {(r["name"].lower(), c) for r in R for c, _, _ in r["cols"] if c in NULLABLE.get(r["name"], set())}
+    built = set(db.q("SELECT table_name, column_name FROM information_schema.columns c JOIN information_schema.tables t "
+                     "USING (table_schema, table_name) WHERE c.table_schema='vytal' AND t.table_type='BASE TABLE' AND c.is_nullable='YES'"))
+    assert built == designed
+
+
 def test_every_foreign_key_restricts_delete(db):
     assert db.one("SELECT count(*) FROM information_schema.referential_constraints "
                   "WHERE constraint_schema='vytal' AND delete_rule <> 'RESTRICT'") == 0

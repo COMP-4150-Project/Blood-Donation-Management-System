@@ -1,4 +1,4 @@
-# Vytal: Blood Donor and Request Management System
+# Vytal: Donor Eligibility and Blood Request Management System
 
 COMP-4150 group project (University of Windsor). Vytal is a database-driven platform that connects blood donors, hospitals and blood inventory: donor registration and eligibility, blood type compatibility, hospital requests matched to eligible donors and stock, and low-stock alerts.
 
@@ -6,7 +6,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 
 | Team member | Role |
 |---|---|
-| Jainam Sheth | Systems Analyst |
+| Jainam Jaykumar Sheth | Systems Analyst |
 | Mohammad Imaad | Data Modeling Specialist |
 | Aakanksha Mandal | Backend Engineer |
 | Shruti Dadhania | UX & Integration Specialist |
@@ -20,7 +20,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `setup.sh` | Builds the database from scratch (`./setup.sh`, or `./setup.sh --no-data` for an empty schema) |
 | `sql/01_schema.sql` | Tables, keys and constraints (generated from the Step 3 design) |
 | `sql/02_logic.sql` | Triggers, views and core procedures (eligibility, unit lifecycle, alerts, allocation, lookback, audit) |
-| `sql/03_procedures.sql` | Registration, screening, testing, donation calls, login lockout |
+| `sql/03_procedures.sql` | Registration, screening, recording donations, testing, donation calls, login lockout |
 | `sql/04_indexes.sql` | Performance indexes |
 | `sql/05_reference_data.sql` | Blood groups, compatibility, shelf lives, donation intervals, deferral reasons |
 | `sql/06_security.sql` | Application and reporting roles (least privilege) |
@@ -56,7 +56,8 @@ On Windows, if `psql` is not found, add `C:\Program Files\PostgreSQL\16\bin` to 
 ### 2. Install Python 3.10+ and the libraries
 
 ```bash
-cd code
+git clone https://github.com/COMP-4150-Project/Blood-Donation-Management-System.git
+cd Blood-Donation-Management-System
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -131,22 +132,55 @@ DELETE FROM facility WHERE facility_id = 1;                -- refused: facility 
 
 Type `\q` to exit.
 
-Every sample account uses the password `Vytal-demo-2026` (stored as a salted scrypt hash). For example: `admin@vytal.example.ca` (Admin), `m.lopez@riverside.example.ca` (Staff) and `liam.tremblay@mail.ca` (Donor).
+Every sample account uses the password `Vytal-demo-2026` (stored as a salted scrypt hash). For example: `admin@vytal.example.ca` (Admin), `m.ross@riverside.example.ca` (Staff, Emergency nurse) and `liam.tremblay@mail.ca` (Donor).
 
 ---
 
 ## Run the tests
 
-From the `code` folder, with the virtual environment active and the variables from step 3 set:
+From the project folder, with the virtual environment active and the variables from step 3 set:
 
 ```bash
 pytest -q
 ```
 
-Expected: **135 passed** (a few may show as skipped).
+Expected: **142 passed, 3 skipped**.
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
-- `tests/test_schema.py` compares the schema with the Step 3 design sources, which are not in this repository, so those checks are **skipped**. This is expected.
+- The 3 skipped tests in `tests/test_schema.py` compare the schema with the Step 3 design sources, which are not in this repository. This is expected.
+
+---
+
+## Stored procedures and the nightly job
+
+The stored procedures are written as PostgreSQL functions (`CREATE FUNCTION`) because most of them return a value to the caller, such as the number of units reserved by `allocate()`. PostgreSQL's `CREATE PROCEDURE` cannot return values in the same way.
+
+`expire_units()` is the nightly expiry job (FR-20). Schedule it with cron:
+
+```bash
+# crontab -e: every night at 00:05
+5 0 * * * PGDATABASE=vytal psql -X -q -c "SELECT vytal.expire_units()"
+```
+
+If the `pg_cron` extension is installed, schedule it inside the database instead:
+
+```sql
+SELECT cron.schedule('vytal-expiry', '5 0 * * *', 'SELECT vytal.expire_units()');
+```
+
+---
+
+## Backup and restore (DI-05)
+
+Take a backup every day and test a restore:
+
+```bash
+pg_dump -Fc -d vytal -f vytal_$(date +%F).dump        # daily backup
+
+createdb vytal_restore                                 # test a restore
+pg_restore -d vytal_restore vytal_YYYY-MM-DD.dump
+psql -d vytal_restore -c "SELECT count(*) FROM vytal.donation"
+```
 
 ---
 

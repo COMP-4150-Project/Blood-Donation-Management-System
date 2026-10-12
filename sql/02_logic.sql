@@ -79,11 +79,8 @@ BEGIN
     IF NEW.expires_at <= collected THEN RAISE EXCEPTION 'expiry must be after collection'; END IF;
     RETURN NEW;
 END $$;
-ALTER TABLE donation ALTER COLUMN blood_group DROP NOT NULL;   -- filled by trigger from the verified group
-ALTER TABLE donation ADD CONSTRAINT donation_group_set CHECK (blood_group IS NOT NULL);
-ALTER TABLE blood_unit ALTER COLUMN expires_at DROP NOT NULL;   -- filled by trigger, re-checked below
+-- NOT NULL on donation.blood_group and blood_unit.expires_at holds as designed: PostgreSQL checks it after BEFORE triggers run
 CREATE TRIGGER unit_expiry BEFORE INSERT ON blood_unit FOR EACH ROW EXECUTE FUNCTION set_unit_expiry();
-ALTER TABLE blood_unit ADD CONSTRAINT unit_expiry_set CHECK (expires_at IS NOT NULL);
 
 -- ---------------------------------------------------------------- FR-13 / FR-14 valid status changes
 CREATE FUNCTION check_unit_status() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -91,7 +88,7 @@ DECLARE ok boolean; bad_or_missing int;
 BEGIN
     IF NEW.status = OLD.status THEN RETURN NEW; END IF;
     ok := (OLD.status, NEW.status) IN (
-        ('Collected','Available'), ('Collected','Discarded'), ('Collected','Quarantined'),
+        ('Collected','Available'), ('Collected','Discarded'), ('Collected','Quarantined'), ('Collected','Expired'),
         ('Available','Reserved'), ('Available','Discarded'), ('Available','Expired'), ('Available','Quarantined'),
         ('Reserved','Available'), ('Reserved','Issued'), ('Reserved','Expired'), ('Reserved','Quarantined'),
         ('Quarantined','Discarded'), ('Quarantined','Available'));
@@ -282,7 +279,7 @@ BEGIN
     UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
       AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
     UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
-    WHERE status IN ('Available','Reserved') AND expires_at <= now();
+    WHERE status IN ('Collected','Available','Reserved') AND expires_at <= now();      -- UC-14
     GET DIAGNOSTICS n = ROW_COUNT;
     INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'expire_units', n::text);
     RETURN n;
@@ -356,3 +353,8 @@ CREATE TRIGGER audit_deferral AFTER INSERT OR UPDATE OR DELETE ON deferral FOR E
 CREATE TRIGGER audit_unit AFTER INSERT OR UPDATE OR DELETE ON blood_unit FOR EACH ROW EXECUTE FUNCTION audit_row('unit_id');
 CREATE TRIGGER audit_request AFTER INSERT OR UPDATE OR DELETE ON blood_request FOR EACH ROW EXECUTE FUNCTION audit_row('request_id');
 CREATE TRIGGER audit_compat AFTER INSERT OR UPDATE OR DELETE ON compatibility FOR EACH ROW EXECUTE FUNCTION audit_row('component_code', 'recipient_group', 'donor_group');
+-- SE-08: every clinical rule table an Admin can change (FR-32) is audited too
+CREATE TRIGGER audit_component AFTER INSERT OR UPDATE OR DELETE ON component_type FOR EACH ROW EXECUTE FUNCTION audit_row('component_code');
+CREATE TRIGGER audit_interval AFTER INSERT OR UPDATE OR DELETE ON donation_interval FOR EACH ROW EXECUTE FUNCTION audit_row('donation_type_code', 'sex');
+CREATE TRIGGER audit_rule AFTER INSERT OR UPDATE OR DELETE ON eligibility_rule FOR EACH ROW EXECUTE FUNCTION audit_row('sex');
+CREATE TRIGGER audit_reason AFTER INSERT OR UPDATE OR DELETE ON deferral_reason FOR EACH ROW EXECUTE FUNCTION audit_row('reason_code');
