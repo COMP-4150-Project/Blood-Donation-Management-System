@@ -2,9 +2,9 @@ SET search_path = vytal;
 -- PostgreSQL does not index foreign keys on its own. Each index below was kept because it measurably sped up
 -- a query or procedure on the full-size bench dataset (bench/results.md); candidates with no gain were left out.
 
--- Q03 / Q04 / Q05 / Q10 and recompute_next_eligible() on every donation: Q03 617 -> 33 ms, Q05 365 -> 2.7 ms
+-- Q03 / Q04 / Q05 / Q10 and recompute_next_eligible() on every donation: Q03 822 -> 39 ms, Q05 456 -> 3.6 ms
 CREATE INDEX donation_donor_time ON donation (donor_id, donated_at DESC);
--- allocate() and the low-stock count in refresh_alert(): only Available units are ever searched (PR-02 106 -> 42 ms)
+-- allocate() and the low-stock count in refresh_alert(): only Available units are ever searched (PR-02 92 -> 50 ms)
 CREATE INDEX unit_available ON blood_unit (facility_id, component_code, expires_at) WHERE status = 'Available';
 -- expire_units() nightly predicate
 CREATE INDEX unit_expiring ON blood_unit (expires_at) WHERE status IN ('Available', 'Reserved');

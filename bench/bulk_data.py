@@ -146,7 +146,9 @@ class Seeder:
             self.defer(d, ts, "LOWHB", staff=staff)
             return
         if not d["verified"]:
+            self.q("SELECT set_config('vytal.user_id', %s, false)", (str(staff),))     # FR-09: staff verify as themselves
             self.q("UPDATE donor SET blood_group=%s, verified_by=%s, verified_at=%s WHERE user_id=%s", (d["group"], staff, ts, d["id"]))
+            self.q("SELECT set_config('vytal.user_id', %s, false)", (str(self.admin),))
             d["verified"] = True
         dtype = pick(rng, (("WB", .78), ("PLS", .10), ("PLT", .12)))
         dn = self.one("INSERT INTO donation (donor_id,recorded_by,donation_type_code,donated_at,volume_ml,hemoglobin_gl) "
@@ -302,6 +304,15 @@ class Seeder:
         self.q("SET LOCAL session_replication_role = origin")
 
 
+HISTORY_AUDIT = {"user_account": "audit_user", "facility": "audit_facility", "donor": "audit_donor", "donation": "audit_donation",
+                 "deferral": "audit_deferral", "blood_unit": "audit_unit", "blood_request": "audit_request"}
+
+
+def audit(con, action):
+    for table, trigger in HISTORY_AUDIT.items():
+        con.execute(f"ALTER TABLE {table} {action} TRIGGER {trigger}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=4150)
@@ -314,13 +325,11 @@ def main():
         con.execute("SET search_path = vytal")
         s = Seeder(con, a.seed, a.donors, a.days, a.regular, a.churn)
         # history is loaded like a data migration: the audit log starts with today's live actions
-        con.execute("ALTER TABLE donor DISABLE TRIGGER audit_donor; ALTER TABLE deferral DISABLE TRIGGER audit_deferral; "
-                    "ALTER TABLE blood_unit DISABLE TRIGGER audit_unit; ALTER TABLE blood_request DISABLE TRIGGER audit_request")
+        audit(con, "DISABLE")
         s.build_org()
         s.build_donors()
         s.history()
-        con.execute("ALTER TABLE donor ENABLE TRIGGER audit_donor; ALTER TABLE deferral ENABLE TRIGGER audit_deferral; "
-                    "ALTER TABLE blood_unit ENABLE TRIGGER audit_unit; ALTER TABLE blood_request ENABLE TRIGGER audit_request")
+        audit(con, "ENABLE")
         expired = s.today()
         con.commit()
         counts = s.q("SELECT 'donors', count(*) FROM donor UNION ALL SELECT 'donations', count(*) FROM donation "

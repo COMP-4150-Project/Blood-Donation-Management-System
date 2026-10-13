@@ -5,7 +5,29 @@ from conftest import PREFIX, build, connect, drop
 def test_row_volumes(sdb):
     counts = dict(sdb.q("SELECT 'donors', count(*) FROM donor UNION ALL SELECT 'donations', count(*) FROM donation "
                         "UNION ALL SELECT 'units', count(*) FROM blood_unit UNION ALL SELECT 'requests', count(*) FROM blood_request"))
-    assert counts == {"donors": 36, "donations": 77, "units": 153, "requests": 26}
+    assert counts == {"donors": 45, "donations": 103, "units": 189, "requests": 69}
+
+
+def test_every_table_has_rows(sdb):
+    tables = [t for (t,) in sdb.q("SELECT tablename FROM pg_tables WHERE schemaname = 'vytal' ORDER BY 1")]
+    empty = [t for t in tables if sdb.one(f"SELECT count(*) FROM vytal.{t}") == 0]
+    assert len(tables) == 29 and empty == []
+
+
+def test_every_deferral_reason_and_component_appears(sdb):
+    assert sdb.one("SELECT count(*) FROM deferral_reason r WHERE NOT EXISTS "
+                   "(SELECT 1 FROM deferral d WHERE d.reason_code = r.reason_code)") == 0
+    assert sdb.one("SELECT count(*) FROM component_type c WHERE NOT EXISTS "
+                   "(SELECT 1 FROM blood_unit u WHERE u.component_code = c.component_code)") == 0
+
+
+def test_history_load_is_not_audited(sdb):
+    """FR-33: the audit log starts with today's live actions; the migrated history adds no INSERT rows."""
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name IN "
+                   "('user_account','facility','donor','donation','blood_unit')") == 0
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'blood_request'") == 4   # today's open requests
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'deferral' "
+                   "AND user_id = 102") == 1                     # the donor's own screening today (UC-04)
 
 
 def test_every_wasted_unit_has_exactly_one_wastage_record(sdb):
