@@ -1,11 +1,12 @@
 """End-to-end flows through the backend, connected as the least-privilege application role (SE-04)."""
 import datetime as dt
 import threading
+from pathlib import Path
 
 import psycopg
 import pytest
 
-from conftest import PREFIX, build
+from conftest import PREFIX, build, drop
 from vytal import services as svc
 
 PASSWORD = "correct-horse-42"
@@ -123,6 +124,20 @@ def test_emergency_shortfall_triggers_a_donation_call(world):
     assert (call, "O-negative donors needed today", "Accepted") in svc.donor_home(called)["calls"]
 
 
+def test_confirming_an_unknown_group_reserves_compatible_stock(world):
+    w, l = world["windsor"], world["london"]
+    donate_and_release(w, new_donor("ap@v.ca", "A+"), "A+", ("RBC",))
+    req = svc.submit_request(w, "P-310", None, "RBC", 1, "Emergency", SOON)
+    assert req["shortfall"] == 1
+    with pytest.raises(svc.AccessDenied, match="another facility"):
+        svc.confirm_request_group(l, req["request_id"], "A+")
+    with pytest.raises(svc.InvalidInput):
+        svc.confirm_request_group(w, req["request_id"], "Z+")
+    assert svc.confirm_request_group(w, req["request_id"], "A+") == {"request_id": req["request_id"], "reserved": 1, "shortfall": 0}
+    with pytest.raises(svc.InvalidInput, match="already has a confirmed group"):
+        svc.confirm_request_group(w, req["request_id"], "B+")
+
+
 def test_positive_test_then_lookback(world):
     w = world["windsor"]
     donor = new_donor("lookback@v.ca", "B+")
@@ -196,3 +211,19 @@ def test_fifty_concurrent_requests_never_share_a_unit(world):
     assert sum(results) == min(stock, 50)
     with owner(world) as con:
         assert con.execute("SELECT count(*) - count(DISTINCT unit_id) FROM vytal.request_unit WHERE released_at IS NULL").fetchone()[0] == 0
+
+
+def test_demo_script_replays_scenario_1(monkeypatch):
+    """demo.py builds its own database and must finish with Scenario 1's outcome."""
+    import os
+    import subprocess
+    import sys
+    monkeypatch.delenv("PGOPTIONS")
+    monkeypatch.delenv("PGDATABASE")
+    env = dict(os.environ)
+    done = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "demo.py")], env=env,
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert "reserved 3, shortfall 1" in done.stdout and "reserved 4 of 4, shortfall 0" in done.stdout
+    assert "request status: Fulfilled" in done.stdout
+    drop("vytal_demo")

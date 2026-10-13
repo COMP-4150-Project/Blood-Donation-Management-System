@@ -26,6 +26,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `sql/06_security.sql` | Application and reporting roles (least privilege) |
 | `sql/07_sample_data.sql` | Hand-written sample data for every table |
 | `sql/queries.sql` | The 13 key queries |
+| `demo.py` | Replays Step 2 Scenario 1 (emergency trauma request) through the backend |
 | `vytal/` | Python backend (password hashing, sessions, operations used by the GUI) |
 | `tests/` | pytest suite (unit, integration, concurrency, security, data integrity) |
 | `bench/` | Performance benchmark and its bulk-data generator |
@@ -145,10 +146,20 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **145 passed, 3 skipped**.
+Expected: **148 passed, 3 skipped** (151 tests in total).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
 - The 3 skipped tests in `tests/test_schema.py` compare the schema with the Step 3 design sources, which are not in this repository. This is expected.
+
+---
+
+## Run the demo
+
+```bash
+python demo.py
+```
+
+This builds a separate `vytal_demo` database and replays Scenario 1 from the Step 2 specification through the `vytal/` package: login, an Emergency request with an unknown group, a shortfall and low-stock alert, a donor search and call, then the lab confirming A+ and the last unit being reserved. It uses the same superuser connection as `setup.sh` and never touches your `vytal` database.
 
 ---
 
@@ -179,12 +190,12 @@ SELECT cron.schedule('vytal-expiry', '5 0 * * *', 'SELECT vytal.expire_units()')
 
 ## Benchmark (optional)
 
-Measures query and procedure times with and without the indexes on a large generated dataset (6,000 donors, about 25,000 units). Takes a few minutes.
+Measures query and procedure times with and without the indexes on the full-size dataset that Step 2's performance targets assume (10,000 donors, about 54,000 donations and 117,000 units), including PR-05 (expiring 50,000 units). Generating the data takes about 3 minutes; the benchmark takes longer, mostly for the PR-05 run without indexes.
 
 ```bash
 createdb vytal_bench
 PGDATABASE=vytal_bench ./setup.sh --no-data
-PGDATABASE=vytal_bench python bench/bulk_data.py
+PGDATABASE=vytal_bench python bench/bulk_data.py --donors 10000 --days 1460 --regular .60 --churn .04
 PGDATABASE=vytal_bench python bench/bench.py      # writes bench/results.md
 ```
 
