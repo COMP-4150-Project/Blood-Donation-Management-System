@@ -1,21 +1,17 @@
-"""SE-01 salted password hashes (scrypt, standard library only)."""
-import hashlib
-import hmac
-import secrets
+"""SE-01 salted password hashes (bcrypt, cost 12)."""
+import bcrypt
 
-_N, _R, _P = 2 ** 14, 8, 1
+ROUNDS = 12
+MAX_BYTES = 72          # bcrypt ignores everything after 72 bytes, so longer passwords are refused at registration
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=_N, r=_R, p=_P)
-    return f"scrypt${_N}${_R}${_P}${salt.hex()}${digest.hex()}"
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(ROUNDS)).decode()
 
 
 def verify_password(password: str, stored: str) -> bool:
+    """False for a wrong password and for anything that is not a bcrypt hash (legacy or malformed); never raises."""
     try:
-        _, n, r, p, salt, digest = stored.split("$")
-        got = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p))
-    except ValueError:
+        return bcrypt.checkpw(password.encode(), stored.encode())
+    except (ValueError, TypeError, AttributeError):
         return False
-    return hmac.compare_digest(got.hex(), digest)

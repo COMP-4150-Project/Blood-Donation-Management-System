@@ -103,8 +103,11 @@ class DB:
         self.seq += 1
         uid = self.one("SELECT register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,%s,%s,'1 Main St',%s)",
                        (f"d{self.seq}@v.ca", age, sex, kg, group))
-        if verified:
+        if verified:                                    # staff verify as themselves (FR-09), then the caller's session is restored
+            prev = self.one("SELECT current_setting('vytal.user_id', true)")
+            self.q("SELECT set_config('vytal.user_id', %s, true)", (str(self.nurse),))
             self.q("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (self.nurse, uid))
+            self.q("SELECT set_config('vytal.user_id', %s, true)", (prev or "",))
         return uid
 
     def screen(self, donor, days_ago=0):
