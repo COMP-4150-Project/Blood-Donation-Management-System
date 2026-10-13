@@ -195,14 +195,29 @@ BEGIN
         WHERE facility_id = p_fac AND blood_group = p_group AND component_code = p_comp AND cleared_at IS NULL;
     END IF;
 END $$;
+-- statement level (PR-05): one stock check per facility/group/component a statement touched, not one per unit.
+-- No join between the transition tables: they have no statistics, so the planner nested-loops them. refresh_alert is
+-- idempotent, so checking every key in either table gives the same alerts as checking only changed rows.
 CREATE FUNCTION trg_unit_alert() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE g text;
 BEGIN
-    SELECT blood_group INTO g FROM v_blood_unit WHERE unit_id = NEW.unit_id;
-    PERFORM refresh_alert(NEW.facility_id, g, NEW.component_code);
+    IF TG_OP = 'INSERT' THEN
+        PERFORM refresh_alert(k.facility_id, k.blood_group, k.component_code)
+        FROM (SELECT DISTINCT n.facility_id, d.blood_group, n.component_code
+              FROM (SELECT DISTINCT facility_id, donation_id, component_code FROM new_units) n
+              JOIN donation d USING (donation_id)) k;
+    ELSE
+        PERFORM refresh_alert(k.facility_id, k.blood_group, k.component_code)
+        FROM (SELECT DISTINCT u.facility_id, d.blood_group, u.component_code
+              FROM (SELECT facility_id, donation_id, component_code FROM new_units
+                    UNION SELECT facility_id, donation_id, component_code FROM old_units) u
+              JOIN donation d USING (donation_id)) k;
+    END IF;
     RETURN NULL;
 END $$;
-CREATE TRIGGER unit_alert AFTER INSERT OR UPDATE OF status ON blood_unit FOR EACH ROW EXECUTE FUNCTION trg_unit_alert();
+CREATE TRIGGER unit_alert_insert AFTER INSERT ON blood_unit REFERENCING NEW TABLE AS new_units
+    FOR EACH STATEMENT EXECUTE FUNCTION trg_unit_alert();
+CREATE TRIGGER unit_alert_update AFTER UPDATE ON blood_unit REFERENCING OLD TABLE AS old_units NEW TABLE AS new_units
+    FOR EACH STATEMENT EXECUTE FUNCTION trg_unit_alert();
 
 -- FR-18 / FR-19: changing a minimum re-checks stock straight away, not at the next unit movement
 CREATE FUNCTION trg_threshold_alert() RETURNS trigger LANGUAGE plpgsql AS $$

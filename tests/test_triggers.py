@@ -163,6 +163,20 @@ def test_changing_a_minimum_rechecks_stock_at_once(db):
     assert open_alerts(db, "A+") == 1
 
 
+def test_one_statement_opens_and_clears_alerts_for_different_groups(db):
+    """The statement-level alert check sees every group a multi-row UPDATE touched (PR-05 bulk path)."""
+    (falling,) = db.stock("O+")
+    dn = db.donate(db.donor("A+"))
+    (rising,) = [u for (u,) in db.q("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))]
+    for t in ("HIV", "HBV", "HCV", "SYPH"):
+        db.q("INSERT INTO test_result (donation_id, test_code, result) VALUES (%s,%s,'Negative')", (dn, t))
+    db.q("INSERT INTO stock_threshold VALUES (%s,'O+','RBC',1), (%s,'A+','RBC',1)", (db.fac_h, db.fac_h))
+    assert (open_alerts(db, "O+"), open_alerts(db, "A+")) == (0, 1)
+    db.q("UPDATE blood_unit SET status = CASE WHEN unit_id = %s THEN 'Discarded' ELSE 'Available' END WHERE unit_id IN (%s,%s)",
+         (falling, falling, rising))
+    assert (open_alerts(db, "O+"), open_alerts(db, "A+")) == (1, 0)
+
+
 # ---------------------------------------------------------------------- FR-33 / EER
 def test_audit_log_records_who_field_old_new(db):
     d = db.donor(kg=70)

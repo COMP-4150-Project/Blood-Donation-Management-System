@@ -151,6 +151,21 @@ def submit_request(staff_id, patient_ref, recipient_group, component, units, urg
     return {"request_id": rid, "reserved": reserved, "shortfall": shortfall}
 
 
+def confirm_request_group(staff_id, request_id, blood_group):
+    """UC-16 step 6: the lab confirms an Unknown group; reserve whatever compatible stock now covers the shortfall."""
+    if blood_group not in GROUPS:
+        raise InvalidInput("blood_group: choose one of the eight groups")
+    with session(staff_id) as con:
+        _own_request(con, staff_id, request_id)
+        if con.execute("UPDATE blood_request SET recipient_group = %s WHERE request_id = %s AND recipient_group IS NULL "
+                       "AND status = 'Open'", (blood_group, request_id)).rowcount != 1:
+            raise InvalidInput("request is closed or already has a confirmed group")
+        con.execute("SELECT allocate(%s)", (request_id,))
+        reserved, shortfall = con.execute("SELECT units_reserved, shortfall FROM v_request_status WHERE request_id = %s",
+                                          (request_id,)).fetchone()
+    return {"request_id": request_id, "reserved": reserved, "shortfall": shortfall}
+
+
 def close_request(staff_id, request_id, cancel=False):
     """FR-28: issue the reserved units (or cancel and release them) for a request at the caller's facility."""
     with session(staff_id) as con:

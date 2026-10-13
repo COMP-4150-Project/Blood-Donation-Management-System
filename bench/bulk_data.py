@@ -1,6 +1,8 @@
 """Bulk data for the efficiency benchmark only; the submitted sample data is sql/07_sample_data.sql.
 
 Usage: PGDATABASE=vytal_bench ./setup.sh --no-data && python bench/bulk_data.py && python bench/bench.py
+Full size (Step 2: 10,000 donors, 50,000 donations, 50,000 units):
+       python bench/bulk_data.py --donors 10000 --days DAYS --regular SHARE --churn RATE
 
 Replays 18 months of clinic activity in time order through the real tables, so every row passes the same
 constraints and triggers as live data (eligibility, expiry, status rules, discards on positive tests).
@@ -11,6 +13,7 @@ import argparse
 import datetime as dt
 import random
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -25,6 +28,8 @@ DEMO_PASSWORD = "Vytal-demo-2026"
 GROUP_SHARE = {"O+": .39, "A+": .36, "B+": .076, "O-": .07, "A-": .06, "AB+": .025, "B-": .014, "AB-": .005}
 DEMAND = {"RBC": .80, "PLASMA": .55, "PLT": .70}
 AVG_NEED = {"RBC": 15 / 7, "PLASMA": 1.5, "PLT": 1.5}      # mean of the unit counts drawn in request()
+MIX = (("regular", .35), ("occasional", .40), ("once", .15), ("never", .10))
+CHURN = .12                                                 # chance a donor stops after any donation
 URGENCY = (("Routine", .6), ("Urgent", .3), ("Emergency", .1))
 FIRST = ["Aarav", "Maya", "Liam", "Noor", "Ethan", "Priya", "Owen", "Sofia", "Lucas", "Amara", "Noah", "Zara",
          "Ravi", "Chloe", "Omar", "Leah", "Jonah", "Ines", "Kai", "Hana", "Mateo", "Elif", "Arjun", "Grace"]
@@ -38,11 +43,14 @@ def pick(rng, weighted):
 
 
 class Seeder:
-    def __init__(self, con, seed):
+    def __init__(self, con, seed, donors=SIZE["donors"], days=DAYS, regular=MIX[0][1], churn=CHURN):
         self.con, self.cur, self.rng = con, con.cursor(), random.Random(seed)
-        self.p = SIZE
+        self.p, self.days, self.churn = {**SIZE, "donors": donors}, days, churn
+        rest = (1 - regular) / (1 - MIX[0][1])
+        self.mix = (("regular", regular),) + tuple((k, w * rest) for k, w in MIX[1:])
+        self.t0 = time.perf_counter()
         self.now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-        self.start = self.now - dt.timedelta(days=DAYS)
+        self.start = self.now - dt.timedelta(days=days)
         self.pw = hash_password(DEMO_PASSWORD)     # one salted hash shared by every seed account (same demo password)
         self.backdate = {"unit": {}, "wastage": {}, "notify": {}}
         self.load_rules()
@@ -100,12 +108,12 @@ class Seeder:
         rng = self.rng
         for i in range(self.p["donors"]):
             sex = rng.choice("MF")
-            reg = self.start + dt.timedelta(days=rng.uniform(-200, DAYS - 5))
+            reg = self.start + dt.timedelta(days=rng.uniform(-200, self.days - 5))
             group = pick(rng, GROUP_SHARE.items())
             age_at_start = rng.uniform(18, 68)
-            kind = pick(rng, (("regular", .35), ("occasional", .40), ("once", .15), ("never", .10)))
+            kind = pick(rng, self.mix)
             if i % 97 == 0:          # a few 16-year-olds and under-weight sign-ups that the eligibility view must explain
-                age_at_start, kind = 16.4 - DAYS / 365.25, "never"
+                age_at_start, kind = 16.4 - self.days / 365.25, "never"
             weight = round(rng.uniform(52, 110), 1) if i % 89 else 47.5
             if weight < 50:
                 kind = "never"
@@ -164,7 +172,7 @@ class Seeder:
             self.produced[fac][c][self.day] += 1
             self.backdate["unit"][u] = tested
         gap = self.interval[dtype, d["sex"]]
-        if d["kind"] == "once" or rng.random() < .12:
+        if d["kind"] == "once" or rng.random() < self.churn:
             d["next"] = None
         else:
             extra = rng.uniform(5, 45) if d["kind"] == "regular" else rng.uniform(60, 240)
@@ -212,8 +220,8 @@ class Seeder:
     def history(self):
         rng = self.rng
         self.stock = {f: defaultdict(list) for f in self.facilities}
-        self.produced = {f: defaultdict(lambda: [0] * DAYS) for f in self.facilities}
-        for day in range(DAYS - 2):          # stop two days early so test and closing times never pass now()
+        self.produced = {f: defaultdict(lambda: [0] * self.days) for f in self.facilities}
+        for day in range(self.days - 2):          # stop two days early so test and closing times never pass now()
             self.day = day
             base = self.start + dt.timedelta(days=day)
             events = [(d["next"], "visit", d) for d in self.donors
@@ -230,6 +238,9 @@ class Seeder:
                     self.visit(who, ts)
                 else:
                     self.request(who, ts, kind)
+            if day % 30 == 0:
+                print(f"day {day}/{self.days} | {time.perf_counter() - self.t0:.0f}s | donations "
+                      f"{self.one('SELECT count(*) FROM donation')}", flush=True)
             for fac in self.facilities:      # drop units that expired today from the simulated shelf
                 for comp in self.stock[fac]:
                     self.stock[fac][comp] = [u for u in self.stock[fac][comp] if u["exp"] > base + dt.timedelta(days=1)]
@@ -294,10 +305,14 @@ class Seeder:
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=4150)
+    ap.add_argument("--donors", type=int, default=SIZE["donors"])
+    ap.add_argument("--days", type=int, default=DAYS, help="length of the simulated history")
+    ap.add_argument("--regular", type=float, default=MIX[0][1], help="share of regular donors; other types keep their ratios")
+    ap.add_argument("--churn", type=float, default=CHURN, help="chance a donor stops after any donation")
     a = ap.parse_args()
     with psycopg.connect(autocommit=False) as con:
         con.execute("SET search_path = vytal")
-        s = Seeder(con, a.seed)
+        s = Seeder(con, a.seed, a.donors, a.days, a.regular, a.churn)
         # history is loaded like a data migration: the audit log starts with today's live actions
         con.execute("ALTER TABLE donor DISABLE TRIGGER audit_donor; ALTER TABLE deferral DISABLE TRIGGER audit_deferral; "
                     "ALTER TABLE blood_unit DISABLE TRIGGER audit_unit; ALTER TABLE blood_request DISABLE TRIGGER audit_request")
@@ -310,7 +325,8 @@ def main():
         con.commit()
         counts = s.q("SELECT 'donors', count(*) FROM donor UNION ALL SELECT 'donations', count(*) FROM donation "
                      "UNION ALL SELECT 'units', count(*) FROM blood_unit UNION ALL SELECT 'requests', count(*) FROM blood_request")
-    print(f"bulk data (seed {a.seed}):", ", ".join(f"{k} {v}" for k, v in counts), f"| expired today {expired}")
+    print(f"bulk data (seed {a.seed}):", ", ".join(f"{k} {v}" for k, v in counts), f"| expired today {expired}",
+          f"| {time.perf_counter() - s.t0:.0f}s", flush=True)
 
 
 if __name__ == "__main__":
