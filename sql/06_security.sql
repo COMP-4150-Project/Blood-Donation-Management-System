@@ -2,10 +2,12 @@
 SET search_path = vytal;
 
 DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_owner') THEN CREATE ROLE vytal_owner; END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_app') THEN CREATE ROLE vytal_app; END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_report') THEN CREATE ROLE vytal_report; END IF;
 END $$;
-ALTER ROLE vytal_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;     -- roles are cluster-wide and may pre-exist
+ALTER ROLE vytal_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;  -- roles are cluster-wide and may pre-exist
+ALTER ROLE vytal_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
 ALTER ROLE vytal_report LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
 -- dev defaults; pass real ones with psql -v app_pw=... -v report_pw=... (setup.sh forwards VYTAL_APP_PW / VYTAL_REPORT_PW)
 \if :{?app_pw} \else \set app_pw 'vytal_app_dev' \endif
@@ -14,16 +16,35 @@ ALTER ROLE vytal_app PASSWORD :'app_pw';
 ALTER ROLE vytal_report PASSWORD :'report_pw';
 
 REVOKE ALL ON ALL TABLES IN SCHEMA vytal FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA vytal FROM PUBLIC;
 REVOKE ALL ON ALL ROUTINES IN SCHEMA vytal FROM PUBLIC;
 
--- application: read and write, never DELETE or TRUNCATE; audit rows are written only by SECURITY DEFINER functions
+-- vytal_owner: a login-less, non-superuser role that owns every routine. Procedures run as it (SECURITY DEFINER), so it
+-- holds exactly the table rights they need: read and write, an append-only audit log, and one DELETE (UC-24 removes a pair).
+GRANT USAGE ON SCHEMA vytal TO vytal_owner;
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA vytal TO vytal_owner;
+REVOKE UPDATE ON audit_log FROM vytal_owner;
+GRANT DELETE ON compatibility TO vytal_owner;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA vytal TO vytal_owner;
+DO $$
+DECLARE r record;
+BEGIN
+    FOR r IN SELECT p.oid::regprocedure AS sig, p.prokind FROM pg_proc p WHERE p.pronamespace = 'vytal'::regnamespace LOOP
+        EXECUTE format('ALTER ROUTINE %s OWNER TO vytal_owner', r.sig);
+        IF r.prokind = 'p' THEN
+            EXECUTE format('ALTER PROCEDURE %s SECURITY DEFINER SET search_path = vytal, pg_temp', r.sig);
+        END IF;
+    END LOOP;
+END $$;
+
+-- application: reads tables and never writes them; every change goes through a procedure (CALL), which checks the acting
+-- user's role and session itself. Internal helpers and trigger functions are not callable.
 GRANT USAGE ON SCHEMA vytal TO vytal_app;
-GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA vytal TO vytal_app;
-REVOKE INSERT, UPDATE ON audit_log FROM vytal_app;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA vytal TO vytal_app;
-GRANT EXECUTE ON ALL ROUTINES IN SCHEMA vytal TO vytal_app;
--- SE-06: sessions change only through the SECURITY DEFINER session procedures, and token hashes are never readable
-REVOKE ALL ON user_session FROM vytal_app;
+GRANT SELECT ON ALL TABLES IN SCHEMA vytal TO vytal_app;
+GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA vytal TO vytal_app;
+GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int), donors_for_group(text, text) TO vytal_app;
+-- SE-06: token hashes are never readable
+REVOKE SELECT ON user_session FROM vytal_app;
 GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_app;
 
 -- reporting (FR-34 dashboards, analytics queries): read-only, and no login secrets

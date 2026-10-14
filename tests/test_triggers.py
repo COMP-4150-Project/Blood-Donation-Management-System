@@ -9,13 +9,19 @@ def next_in(db, donor):
 
 # ---------------------------------------------------------------------- FR-07 / FR-11 eligibility before a donation
 @pytest.mark.parametrize("kwargs, hb, needle", [
-    (dict(age=16), 140, "under 17"),
     (dict(kg=45), 140, "50 kg"),
     (dict(sex="M"), 128, "hemoglobin"),
     (dict(sex="F"), 124, "hemoglobin"),
 ])
 def test_threshold_rules(db, kwargs, hb, needle):
     assert needle in db.fails(INSERT_DONATION.replace(",140)", ",%s)"), (db.donor(**kwargs), db.nurse, 450, hb))
+
+
+def test_donation_refused_below_the_minimum_age(db):
+    """BR-01: a 17-year-old registered under the old rule cannot donate once an Admin raises the minimum to 18 (MA-01)."""
+    d = db.donor(age=17)
+    db.q("UPDATE eligibility_rule SET min_age_years = 18")
+    assert "under 18" in db.fails(INSERT_DONATION, (d, db.nurse, 450))
 
 
 def test_thresholds_are_data_not_code(db):
@@ -202,9 +208,11 @@ def test_clinical_rule_changes_are_audited(db, sql, table):
 def test_temp_table_cannot_shadow_the_audit_log(db):
     """SE-08: SECURITY DEFINER functions search pg_temp last."""
     d = db.donor()
+    email = db.one("SELECT email FROM user_account WHERE user_id=%s", (d,))
     db.q("SET LOCAL ROLE vytal_app")
     db.q("CREATE TEMP TABLE audit_log (LIKE vytal.audit_log)")
-    db.q("UPDATE donor SET weight_kg = 80 WHERE user_id=%s", (d,))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    db.q("CALL update_donor_profile(%s, NULL, %s, NULL, 80)", (d, email))
     assert db.one("SELECT count(*) FROM pg_temp.audit_log") == 0
     db.q("RESET ROLE")
     assert db.one("SELECT count(*) FROM vytal.audit_log WHERE record_id=%s AND field_name='weight_kg'", (str(d),)) == 1

@@ -1,4 +1,4 @@
--- Vytal sample data: hand-designed, realistic activity over the last ten months at two hospitals and a blood centre.
+-- Vytal sample data: hand-designed, realistic activity over the last ten months at three hospitals and a blood centre.
 -- Every row goes through the real constraints and triggers. Dates are relative to now() so the data never goes stale.
 -- Load with psql (uses one psql variable): every account's password is Vytal-demo-2026, stored as a salted bcrypt hash (cost 12) (SE-01).
 SET search_path = vytal;
@@ -17,7 +17,8 @@ ALTER TABLE blood_request DISABLE TRIGGER audit_request;
 INSERT INTO facility (facility_id, name, facility_type, address, phone, email) VALUES
     (1, 'Riverside General Hospital', 'Hospital', '1030 Riverside Dr E, Windsor, ON', '519-555-0101', 'bloodbank@riverside.example.ca'),
     (2, 'Essex County Hospital', 'Hospital', '250 Manning Rd, Tecumseh, ON', '519-555-0202', 'lab@essex.example.ca'),
-    (3, 'Lakeshore Blood Centre', 'Blood Bank', '3200 Lakeshore Blvd, Windsor, ON', '519-555-0303', 'clinic@lakeshore.example.ca');
+    (3, 'Lakeshore Blood Centre', 'Blood Bank', '3200 Lakeshore Blvd, Windsor, ON', '519-555-0303', 'clinic@lakeshore.example.ca'),
+    (4, 'St. Clair Community Hospital', 'Hospital', '725 Notre Dame St, Belle River, ON', '519-555-0404', 'lab@stclair.example.ca');
 
 -- ---------------------------------------------------------------- admins and staff (FR-04): each staff member belongs to one facility
 INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_by, created_at) VALUES
@@ -27,16 +28,22 @@ INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, 
     (2, 'ops@vytal.example.ca', :'pw', 'Daniel', 'Okoro', '519-555-0002', 'Admin', 1, now() - interval '390 days');
 INSERT INTO admin VALUES (2);
 INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_by, created_at) VALUES
+    (11, 'audit@vytal.example.ca', :'pw', 'Kevin', 'Tran', '519-555-0011', 'Admin', 1, now() - interval '200 days');
+INSERT INTO admin VALUES (11);
+INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, phone, role, created_by, created_at) VALUES
     (3, 'm.ross@riverside.example.ca', :'pw', 'Maya', 'Ross', '519-555-0103', 'Staff', 1, now() - interval '380 days'),
     (4, 'j.campbell@riverside.example.ca', :'pw', 'James', 'Campbell', '519-555-0104', 'Staff', 1, now() - interval '380 days'),
     (5, 'a.kowalski@essex.example.ca', :'pw', 'Anna', 'Kowalski', '519-555-0205', 'Staff', 1, now() - interval '375 days'),
     (6, 't.osei@essex.example.ca', :'pw', 'Thomas', 'Osei', '519-555-0206', 'Staff', 2, now() - interval '375 days'),
     (7, 'r.desai@lakeshore.example.ca', :'pw', 'Rina', 'Desai', '519-555-0307', 'Staff', 2, now() - interval '370 days'),
-    (8, 'p.murphy@lakeshore.example.ca', :'pw', 'Patrick', 'Murphy', '519-555-0308', 'Staff', 2, now() - interval '370 days');
+    (8, 'p.murphy@lakeshore.example.ca', :'pw', 'Patrick', 'Murphy', '519-555-0308', 'Staff', 2, now() - interval '370 days'),
+    (9, 'h.liu@stclair.example.ca', :'pw', 'Helen', 'Liu', '519-555-0409', 'Staff', 2, now() - interval '160 days'),
+    (10, 'e.petrova@stclair.example.ca', :'pw', 'Elena', 'Petrova', '519-555-0410', 'Staff', 11, now() - interval '160 days');
 INSERT INTO staff (user_id, facility_id, job_title) VALUES
     (3, 1, 'Emergency Department Nurse'), (4, 1, 'Medical Lab Technologist'),
     (5, 2, 'Transfusion Nurse'), (6, 2, 'Medical Lab Technologist'),
-    (7, 3, 'Phlebotomist'), (8, 3, 'Clinic Supervisor');
+    (7, 3, 'Phlebotomist'), (8, 3, 'Clinic Supervisor'),
+    (9, 4, 'Emergency Department Nurse'), (10, 4, 'Medical Lab Technologist');
 
 -- ---------------------------------------------------------------- donors (FR-01, FR-09): group verified by staff at the first donation
 -- Donor codes continue the Step 2 scenarios' numbering: D-1042 (donor 127) is the Scenario 5 lookback donor.
@@ -67,10 +74,10 @@ INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, 
     (124, 'ravi.joshi@mail.ca', :'pw', 'Ravi', 'Joshi', '519-555-1124', 'Donor', now() - interval '205 days'),
     (125, 'jonah.pelletier@mail.ca', :'pw', 'Jonah', 'Pelletier', '519-555-1125', 'Donor', now() - interval '290 days'),
     (126, 'amara.okafor@mail.ca', :'pw', 'Amara', 'Okafor', '519-555-1126', 'Donor', now() - interval '220 days'),
-    (127, 'victor.belanger@mail.ca', :'pw', 'Victor', 'Belanger', '519-555-1127', 'Donor', now() - interval '260 days'),
+    (127, 'victor.belanger@mail.ca', :'pw', 'Victor', 'Belanger', '519-555-1127', 'Donor', now() - interval '310 days'),
     (128, 'elif.demir@mail.ca', :'pw', 'Elif', 'Demir', '519-555-1128', 'Donor', now() - interval '140 days'),
-    (129, 'marcus.reid@mail.ca', :'pw', 'Marcus', 'Reid', '519-555-1129', 'Donor', now() - interval '220 days'),
-    (130, 'priya.iyer@mail.ca', :'pw', 'Priya', 'Iyer', '519-555-1130', 'Donor', now() - interval '170 days'),
+    (129, 'darius.reid@mail.ca', :'pw', 'Darius', 'Reid', '519-555-1129', 'Donor', now() - interval '220 days'),
+    (130, 'meera.iyer@mail.ca', :'pw', 'Meera', 'Iyer', '519-555-1130', 'Donor', now() - interval '170 days'),
     (131, 'samuel.gauthier@mail.ca', :'pw', 'Samuel', 'Gauthier', '519-555-1131', 'Donor', now() - interval '100 days'),
     (132, 'nora.hughes@mail.ca', :'pw', 'Nora', 'Hughes', '519-555-1132', 'Donor', now() - interval '190 days'),
     (133, 'lily.morgan@mail.ca', :'pw', 'Lily', 'Morgan', '519-555-1133', 'Donor', now() - interval '45 days'),
@@ -96,7 +103,23 @@ INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, 
     (153, 'fatima.noor@mail.ca', :'pw', 'Fatima', 'Noor', '519-555-1153', 'Donor', now() - interval '185 days'),
     (154, 'nathan.poirier@mail.ca', :'pw', 'Nathan', 'Poirier', '519-555-1154', 'Donor', now() - interval '155 days'),
     (155, 'rosa.alvarez@mail.ca', :'pw', 'Rosa', 'Alvarez', '519-555-1155', 'Donor', now() - interval '270 days'),
-    (156, 'connor.doyle@mail.ca', :'pw', 'Connor', 'Doyle', '519-555-1156', 'Donor', now() - interval '125 days');
+    (156, 'connor.doyle@mail.ca', :'pw', 'Connor', 'Doyle', '519-555-1156', 'Donor', now() - interval '125 days'),
+    -- Scenario 2 (Priya) and Scenario 3 (Marcus)
+    (157, 'priya.nair@mail.ca', :'pw', 'Priya', 'Nair', '519-555-1157', 'Donor', now() - interval '33 days'),
+    (158, 'marcus.bell@mail.ca', :'pw', 'Marcus', 'Bell', '519-555-1158', 'Donor', now() - interval '300 days'),
+    -- a first-time O-negative donor at Riverside, three self-registered donors who chose "I don't know" for their group,
+    -- and donors who gave in the last four weeks at each site
+    (159, 'ethan.lapointe@mail.ca', :'pw', 'Ethan', 'Lapointe', '519-555-1159', 'Donor', now() - interval '25 days'),
+    (160, 'lucia.romano@mail.ca', :'pw', 'Lucia', 'Romano', '519-555-1160', 'Donor', now() - interval '20 days'),
+    (161, 'marco.rossi@mail.ca', :'pw', 'Marco', 'Rossi', '519-555-1161', 'Donor', now() - interval '12 days'),
+    (162, 'kofi.mensah@mail.ca', :'pw', 'Kofi', 'Mensah', '519-555-1162', 'Donor', now() - interval '3 days'),
+    (163, 'adam.pereira@mail.ca', :'pw', 'Adam', 'Pereira', '519-555-1163', 'Donor', now() - interval '30 days'),
+    (164, 'nina.volkova@mail.ca', :'pw', 'Nina', 'Volkova', '519-555-1164', 'Donor', now() - interval '60 days'),
+    (165, 'jamal.wright@mail.ca', :'pw', 'Jamal', 'Wright', '519-555-1165', 'Donor', now() - interval '40 days'),
+    (166, 'hiro.tanaka@mail.ca', :'pw', 'Hiro', 'Tanaka', '519-555-1166', 'Donor', now() - interval '45 days'),
+    (167, 'amelie.caron@mail.ca', :'pw', 'Amélie', 'Caron', '519-555-1167', 'Donor', now() - interval '20 days'),
+    (168, 'sean.byrne@mail.ca', :'pw', 'Sean', 'Byrne', '519-555-1168', 'Donor', now() - interval '50 days'),
+    (169, 'leila.karimi@mail.ca', :'pw', 'Leila', 'Karimi', '519-555-1169', 'Donor', now() - interval '70 days');
 
 INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group, verified_by, verified_at) VALUES
     (101, 'D-1016', '1985-03-14', 'M', 91, '201 Ouellette Ave, Windsor, ON', 'O+', 4, now() - interval '290 days' - interval '30 minutes'),
@@ -125,7 +148,7 @@ INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, 
     (124, 'D-1039', '1989-10-10', 'M', 70, '224 Ouellette Ave, Windsor, ON', 'B-', 6, now() - interval '185 days' - interval '30 minutes'),
     (125, 'D-1040', '1973-07-31', 'M', 83, '225 Ouellette Ave, Windsor, ON', 'O+', 8, now() - interval '270 days' - interval '30 minutes'),
     (126, 'D-1041', '1997-11-14', 'F', 96, '226 Ouellette Ave, Windsor, ON', 'A+', 7, now() - interval '200 days' - interval '30 minutes'),
-    (127, 'D-1042', '1982-03-03', 'M', 69, '227 Ouellette Ave, Windsor, ON', 'B+', 4, now() - interval '240 days' - interval '30 minutes'),
+    (127, 'D-1042', '1982-03-03', 'M', 69, '227 Ouellette Ave, Windsor, ON', 'B+', 4, now() - interval '300 days' - interval '30 minutes'),
     (128, 'D-1043', '1990-06-06', 'F', 82, '228 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '120 days' - interval '30 minutes'),
     (129, 'D-1044', '1994-12-01', 'M', 95, '229 Ouellette Ave, Windsor, ON', 'A+', 8, now() - interval '200 days' - interval '30 minutes'),
     (130, 'D-1045', '1986-01-23', 'F', 68, '230 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '150 days' - interval '30 minutes'),
@@ -143,8 +166,9 @@ INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, 
     -- HIV-positive donation (permanent deferral) and a pregnancy deferral
     (144, 'D-1059', '1993-09-14', 'M', 79, '244 Ouellette Ave, Windsor, ON', 'A+', 6, now() - interval '120 days' - interval '30 minutes'),
     (145, 'D-1060', '1995-11-08', 'F', 67, '245 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '200 days' - interval '30 minutes'),
-    -- registered but never donated: under 17, under 50 kg, group unknown, brand new
-    (133, 'D-1048', (CURRENT_DATE - interval '16 years 4 months')::date, 'F', 55, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
+    -- registered but never donated: a new 18-year-old, under 50 kg, group unknown, brand new (an under-17 sign-up is
+    -- refused by register_donor, UC-01 2b, so it has no row here)
+    (133, 'D-1048', (CURRENT_DATE - interval '18 years 2 months')::date, 'F', 55, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
     (134, 'D-1049', '2001-04-12', 'M', 47.5, '234 Ouellette Ave, Windsor, ON', 'O+', NULL, NULL),
     (135, 'D-1050', '1999-08-30', 'F', 61, '235 Ouellette Ave, Windsor, ON', NULL, NULL, NULL),
     (136, 'D-1051', '2003-02-02', 'M', 74, '236 Ouellette Ave, Windsor, ON', 'B+', NULL, NULL);
@@ -157,6 +181,22 @@ FROM (VALUES (146, '1986-02-11', 'M', 82, 4, 180), (147, '1990-07-04', 'F', 63, 
              (149, '1994-03-27', 'F', 58, 8, 210), (150, '1988-12-02', 'M', 76, 3, 120), (151, '1996-05-15', 'F', 66, 6, 195),
              (152, '1983-09-08', 'M', 93, 7, 240), (153, '1991-01-30', 'F', 70, 4, 165), (154, '1975-06-21', 'M', 85, 5, 135),
              (155, '1987-11-12', 'F', 61, 8, 250), (156, '1999-04-03', 'M', 79, 3, 105)) AS v(uid, dob, sex, kg, staff, days_ago);
+-- Scenario 2: Priya is 19 and self-reported B-positive (unverified until her first donation). Scenario 3: Marcus is a regular
+-- O-positive donor at Lakeshore. Unknown groups stay NULL and unverified, so those donors are never called (FR-25).
+INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group, verified_by, verified_at) VALUES
+    (157, 'D-1072', (CURRENT_DATE - interval '19 years 3 months')::date, 'F', 58, '18 Sunset Ave, Windsor, ON', 'B+', NULL, NULL),
+    (158, 'D-1073', '1988-04-22', 'M', 84, '57 Lakeshore Blvd, Windsor, ON', 'O+', 7, now() - interval '290 days' - interval '30 minutes'),
+    (159, 'D-1074', '1993-08-09', 'M', 80, '920 Erie St E, Windsor, ON', 'O-', 4, now() - interval '18 days' - interval '30 minutes'),
+    (160, 'D-1075', '1998-02-17', 'F', 62, '41 Tecumseh Rd W, Windsor, ON', NULL, NULL, NULL),
+    (161, 'D-1076', '1985-11-30', 'M', 88, '1500 Howard Ave, Windsor, ON', NULL, NULL, NULL),
+    (162, 'D-1077', '2004-06-05', 'M', 71, '303 Pelissier St, Windsor, ON', NULL, NULL, NULL),
+    (163, 'D-1078', '1990-01-12', 'M', 83, '77 Giles Blvd E, Windsor, ON', 'A+', 4, now() - interval '12 days' - interval '30 minutes'),
+    (164, 'D-1079', '1994-05-03', 'F', 66, '12 Main St, Tecumseh, ON', 'O+', 6, now() - interval '9 days' - interval '30 minutes'),
+    (165, 'D-1080', '1987-09-14', 'M', 90, '88 Rourke Line, Belle River, ON', 'O+', 10, now() - interval '16 days' - interval '30 minutes'),
+    (166, 'D-1081', '1982-03-27', 'M', 76, '9 Notre Dame St, Belle River, ON', 'A+', 10, now() - interval '21 days' - interval '30 minutes'),
+    (167, 'D-1082', '1997-12-08', 'F', 61, '640 Lesperance Rd, Tecumseh, ON', 'O+', 5, now() - interval '6 days' - interval '30 minutes'),
+    (168, 'D-1083', '1991-07-19', 'M', 85, '2050 Wyandotte St W, Windsor, ON', 'B+', 4, now() - interval '11 days' - interval '30 minutes'),
+    (169, 'D-1084', '1989-10-25', 'F', 64, '415 Manning Rd, Tecumseh, ON', 'A+', 6, now() - interval '27 days' - interval '30 minutes');
 
 -- ---------------------------------------------------------------- screening before every clinic visit (FR-06)
 INSERT INTO screening (screening_id, donor_id, completed_at) VALUES
@@ -197,7 +237,7 @@ INSERT INTO screening (screening_id, donor_id, completed_at) VALUES
     (35, 132, now() - interval '170 days' - interval '20 minutes'),
     (36, 103, now() - interval '160 days' - interval '20 minutes'),
     (37, 114, now() - interval '160 days' - interval '20 minutes'),
-    (38, 127, now() - interval '160 days' - interval '20 minutes'),
+    (38, 127, now() - interval '180 days' - interval '20 minutes'),
     (39, 109, now() - interval '150 days' - interval '20 minutes'),
     (40, 113, now() - interval '150 days' - interval '20 minutes'),
     (41, 130, now() - interval '150 days' - interval '20 minutes'),
@@ -255,6 +295,14 @@ INSERT INTO screening (screening_id, donor_id, completed_at)
 SELECT 107 + uid - 145, uid, now() - make_interval(days => days_ago) - interval '20 minutes'
 FROM (VALUES (146, 180), (147, 230), (148, 150), (149, 210), (150, 120), (151, 195), (152, 240), (153, 165), (154, 135),
              (155, 250), (156, 105)) AS v(uid, days_ago);
+-- D-1042's other visits, Marcus's regular visits, the donors added above, and Priya's first questionnaire (Scenario 2)
+INSERT INTO screening (screening_id, donor_id, completed_at)
+SELECT 118 + row_number() OVER (ORDER BY ord), donor, now() - make_interval(days => days_ago) - interval '20 minutes'
+FROM (VALUES (1, 127, 300), (2, 127, 120), (3, 127, 63),
+             (4, 158, 290), (5, 158, 225), (6, 158, 160), (7, 158, 95), (8, 158, 1),
+             (9, 159, 18), (10, 105, 13), (11, 111, 13), (12, 126, 12), (13, 163, 12),
+             (14, 164, 9), (15, 165, 16), (16, 166, 21), (17, 167, 6), (18, 168, 11), (19, 169, 27),
+             (20, 157, 31)) AS v(ord, donor, days_ago);
 
 -- every visit answers all six questions; the answers below are the 'clean' ones (no deferral)
 INSERT INTO screening_answer (screening_id, question_id, answer)
@@ -268,6 +316,7 @@ INSERT INTO donation (donation_id, donor_id, recorded_by, donation_type_code, do
     (3, 111, 4, 'WB', now() - interval '310 days', 450, 139),
     (4, 103, 4, 'WB', now() - interval '300 days', 450, 146),
     (5, 122, 5, 'WB', now() - interval '300 days', 450, 159),
+    (115, 127, 4, 'WB', now() - interval '300 days', 450, 150),
     (6, 113, 5, 'WB', now() - interval '295 days', 450, 151),
     (7, 101, 4, 'WB', now() - interval '290 days', 450, 152),
     (8, 102, 3, 'WB', now() - interval '280 days', 450, 136),
@@ -294,18 +343,19 @@ INSERT INTO donation (donation_id, donor_id, recorded_by, donation_type_code, do
     (29, 112, 3, 'WB', now() - interval '190 days', 450, 159),
     (30, 124, 6, 'WB', now() - interval '185 days', 450, 148),
     (31, 102, 3, 'WB', now() - interval '180 days', 450, 141),
+    (37, 127, 4, 'WB', now() - interval '180 days', 450, 159),
     (32, 125, 8, 'WB', now() - interval '180 days', 450, 150),
     (33, 117, 5, 'WB', now() - interval '175 days', 450, 149),
     (34, 132, 7, 'WB', now() - interval '170 days', 450, 146),
     (35, 103, 4, 'WB', now() - interval '160 days', 450, 156),
     (36, 114, 5, 'WB', now() - interval '160 days', 450, 145),
-    (37, 127, 4, 'WB', now() - interval '160 days', 450, 159),
     (38, 109, 4, 'WB', now() - interval '150 days', 450, 145),
     (39, 113, 6, 'WB', now() - interval '150 days', 450, 156),
     (40, 130, 7, 'WB', now() - interval '150 days', 450, 142),
     (41, 120, 6, 'WB', now() - interval '145 days', 450, 155),
     (42, 101, 4, 'WB', now() - interval '140 days', 450, 152),
     (43, 107, 4, 'WB', now() - interval '120 days', 450, 159),
+    (116, 127, 4, 'WB', now() - interval '120 days', 450, 151),
     (44, 116, 5, 'WB', now() - interval '120 days', 450, 134),
     (45, 128, 7, 'WB', now() - interval '120 days', 450, 143),
     (46, 122, 5, 'WB', now() - interval '110 days', 450, 149),
@@ -318,6 +368,7 @@ INSERT INTO donation (donation_id, donor_id, recorded_by, donation_type_code, do
     (53, 131, 8, 'WB', now() - interval '80 days', 450, 152),
     (54, 120, 6, 'WB', now() - interval '75 days', 450, 145),
     (55, 101, 4, 'WB', now() - interval '70 days', 450, 157),
+    (117, 127, 4, 'WB', now() - interval '63 days', 450, 153),
     (56, 108, 3, 'PLS', now() - interval '60 days', 600, 151),
     (57, 113, 6, 'WB', now() - interval '60 days', 450, 156),
     (58, 132, 7, 'WB', now() - interval '60 days', 450, 141),
@@ -360,6 +411,16 @@ SELECT 104 + uid - 146, uid, staff, 'WB', now() - make_interval(days => days_ago
 FROM (VALUES (146, 4, 180, 151), (147, 7, 230, 133), (148, 5, 150, 148), (149, 8, 210, 129), (150, 3, 120, 155),
              (151, 6, 195, 136), (152, 7, 240, 157), (153, 4, 165, 131), (154, 5, 135, 146), (155, 8, 250, 134),
              (156, 3, 105, 150)) AS v(uid, staff, days_ago, hb);
+-- (donation, donor, staff, days ago, Hb): Marcus's regular whole-blood visits at Lakeshore, the last one yesterday at
+-- 142 g/L (Scenario 3); Scenario 4's four A-positive donations at Riverside; and recent donations at every site
+INSERT INTO donation (donation_id, donor_id, recorded_by, donation_type_code, donated_at, volume_ml, hemoglobin_gl)
+SELECT id, donor, staff, 'WB', now() - make_interval(days => days_ago), 450, hb
+FROM (VALUES (118, 158, 7, 290, 148), (119, 158, 8, 225, 150), (120, 158, 7, 160, 147), (121, 158, 8, 95, 149),
+             (122, 158, 7, 1, 142),
+             (123, 159, 4, 18, 152),
+             (124, 105, 4, 13, 148), (125, 111, 4, 13, 138), (126, 126, 4, 12, 136), (127, 163, 4, 12, 150),
+             (128, 164, 6, 9, 137), (129, 165, 10, 16, 151), (130, 166, 10, 21, 147), (131, 167, 5, 6, 133),
+             (132, 168, 4, 11, 155), (133, 169, 6, 27, 131)) AS v(id, donor, staff, days_ago, hb);
 
 -- four visits ended in a deferral from the questionnaire (TRAVEL, UNWELL, TATTOO, PREG); recorded after the donation batch
 -- because a still-active deferral would otherwise block that donor's older donations in the same INSERT
@@ -367,11 +428,15 @@ UPDATE screening_answer SET answer = TRUE WHERE screening_id = 32 AND question_i
 UPDATE screening_answer SET answer = FALSE WHERE screening_id = 49 AND question_id = 3;
 UPDATE screening_answer SET answer = TRUE WHERE screening_id = 67 AND question_id = 1;
 UPDATE screening_answer SET answer = TRUE WHERE screening_id = 107 AND question_id = 6;
+UPDATE screening_answer SET answer = TRUE WHERE question_id = 1 AND screening_id = (SELECT screening_id FROM screening WHERE donor_id = 157);
 INSERT INTO deferral (donor_id, reason_code, start_date, end_date, screening_id) VALUES
     (123, 'TRAVEL', (now() - interval '180 days')::date, (now() - interval '180 days')::date + 90, 32),
     (104, 'UNWELL', (now() - interval '100 days')::date, (now() - interval '100 days')::date + 1, 49),
     (129, 'TATTOO', (now() - interval '30 days')::date, (now() - interval '30 days')::date + 90, 67),
     (145, 'PREG', (now() - interval '45 days')::date, (now() - interval '45 days')::date + 180, 107);
+-- Scenario 2: Priya's tattoo was six weeks old when she answered, so she is deferred until three months after it
+INSERT INTO deferral (donor_id, reason_code, start_date, end_date, screening_id)
+SELECT 157, 'TATTOO', completed_at::date, completed_at::date + 90, screening_id FROM screening WHERE donor_id = 157;
 
 -- ---------------------------------------------------------------- component units (FR-12); expiry and location are set by trigger
 INSERT INTO blood_unit (unit_id, donation_id, component_code) VALUES
@@ -431,14 +496,23 @@ SELECT format('U%s-%s', d.donation_id, c.code), d.donation_id, c.code
 FROM donation d JOIN (VALUES ('WB', 'RBC'), ('WB', 'PLASMA'), ('PLS', 'PLASMA'), ('PLT', 'PLT')) AS c(typ, code)
      ON c.typ = d.donation_type_code
 WHERE d.donation_id BETWEEN 78 AND 114;
+INSERT INTO blood_unit (unit_id, donation_id, component_code)
+SELECT format('U%s-%s', id, c), id, c
+FROM (VALUES (115, ARRAY['RBC','PLASMA']), (116, ARRAY['RBC','PLASMA','PLT']), (117, ARRAY['RBC','PLASMA']),
+             (118, ARRAY['RBC','PLASMA']), (119, ARRAY['RBC','PLASMA']), (120, ARRAY['RBC','PLASMA']), (121, ARRAY['RBC','PLASMA']),
+             (122, ARRAY['RBC','PLASMA','PLT']), (123, ARRAY['RBC','PLASMA']),
+             (124, ARRAY['RBC','PLASMA','PLT']), (125, ARRAY['RBC','PLASMA','PLT']), (126, ARRAY['RBC','PLASMA','PLT']),
+             (127, ARRAY['RBC','PLASMA','PLT']), (128, ARRAY['RBC','PLASMA']), (129, ARRAY['RBC','PLASMA']),
+             (130, ARRAY['RBC','PLASMA']), (131, ARRAY['RBC','PLASMA']), (132, ARRAY['RBC','PLASMA']),
+             (133, ARRAY['RBC','PLASMA'])) AS v(id, comps), unnest(comps) AS c;
 
 -- ---------------------------------------------------------------- test results, 12 hours after each donation (FR-13)
 INSERT INTO test_result (donation_id, test_code, result, tested_at)
 SELECT d.donation_id, t.test_code, 'Negative', d.donated_at + interval '12 hours'
-FROM donation d CROSS JOIN test_type t WHERE d.donation_id NOT IN (76, 102);
+FROM donation d CROSS JOIN test_type t WHERE d.donation_id NOT IN (76, 102, 122);
 -- every unit whose tests all passed is released to stock (the status trigger checks the tests); this happens
 -- before donor 127's positive result below, as it did in time, so their earlier units were already on the shelf
-UPDATE blood_unit SET status = 'Available' WHERE status = 'Collected' AND donation_id NOT IN (76, 102);
+UPDATE blood_unit SET status = 'Available' WHERE status = 'Collected' AND donation_id NOT IN (76, 102, 122);
 
 -- donor D-1059's (user 144) only donation tests HIV positive: units discarded, donor flagged and permanently deferred (FR-13)
 INSERT INTO test_result (donation_id, test_code, result, tested_at)
@@ -452,7 +526,7 @@ SELECT 76, test_code, CASE test_code WHEN 'HBV' THEN 'Positive' ELSE 'Negative' 
 INSERT INTO deferral (donor_id, reason_code, start_date, recorded_by) VALUES (127, 'HBV', (now() - interval '5 days')::date, 3);
 
 -- a staff-recorded deferral: hemoglobin too low at the clinic 10 days ago
-INSERT INTO deferral (donor_id, reason_code, start_date, end_date, recorded_by) VALUES (130, 'LOWHB', (now() - interval '10 days')::date, (now() - interval '10 days')::date + 56, 7);
+INSERT INTO deferral (donor_id, reason_code, start_date, end_date, recorded_by) VALUES (109, 'LOWHB', (now() - interval '10 days')::date, (now() - interval '10 days')::date + 56, 4);
 
 
 -- ---------------------------------------------------------------- past requests (FR-22..28): created, reserved, issued, closed
@@ -483,7 +557,15 @@ INSERT INTO blood_request (request_id, requested_by, patient_ref, recipient_grou
     (27, 3, 'P-24851', 'A+', 'PLT', 1, 'Urgent', now() - interval '278 days' + interval '6 hours', 'Fulfilled', now() - interval '278 days', now() - interval '278 days' + interval '4 hours'),
     (28, 4, 'P-24888', 'O+', 'RBC', 1, 'Routine', now() - interval '254 days' + interval '48 hours', 'Fulfilled', now() - interval '254 days', now() - interval '254 days' + interval '20 hours'),
     (29, 5, 'P-24925', 'O-', 'RBC', 1, 'Emergency', now() - interval '189 days' + interval '1 hours', 'Fulfilled', now() - interval '189 days', now() - interval '189 days' + interval '1 hours'),
-    (30, 4, 'P-24962', 'O+', 'PLT', 1, 'Urgent', now() - interval '158 days' + interval '6 hours', 'Fulfilled', now() - interval '158 days', now() - interval '158 days' + interval '4 hours');
+    (30, 4, 'P-24962', 'O+', 'PLT', 1, 'Urgent', now() - interval '158 days' + interval '6 hours', 'Fulfilled', now() - interval '158 days', now() - interval '158 days' + interval '4 hours'),
+    -- Scenario 4: oncology's Routine request for two A-positive platelet units on "Monday", nine days ago
+    (32, 4, 'P-24990', 'A+', 'PLT', 2, 'Routine', now() - interval '9 days' + interval '48 hours', 'Fulfilled', now() - interval '9 days', now() - interval '9 days' + interval '20 hours'),
+    -- Scenario 5: six of D-1042's earlier units went to Riverside patients before his positive test
+    (33, 3, 'P-24300', 'B+', 'RBC', 1, 'Routine', now() - interval '295 days' + interval '48 hours', 'Fulfilled', now() - interval '295 days', now() - interval '295 days' + interval '20 hours'),
+    (34, 4, 'P-24412', 'B+', 'RBC', 1, 'Urgent', now() - interval '235 days' + interval '6 hours', 'Fulfilled', now() - interval '235 days', now() - interval '235 days' + interval '4 hours'),
+    (35, 3, 'P-24561', 'B+', 'RBC', 1, 'Routine', now() - interval '176 days' + interval '48 hours', 'Fulfilled', now() - interval '176 days', now() - interval '176 days' + interval '20 hours'),
+    (36, 4, 'P-24708', 'B+', 'RBC', 1, 'Routine', now() - interval '115 days' + interval '48 hours', 'Fulfilled', now() - interval '115 days', now() - interval '115 days' + interval '20 hours'),
+    (37, 3, 'P-24321', 'B+', 'PLASMA', 1, 'Routine', now() - interval '290 days' + interval '48 hours', 'Fulfilled', now() - interval '290 days', now() - interval '290 days' + interval '20 hours');
 INSERT INTO request_unit (request_id, unit_id, reserved_at, issued_at) VALUES
     (1, 'U6-RBC', now() - interval '285 days' + interval '5 minutes', now() - interval '285 days' + interval '20 hours'),
     (1, 'U2-RBC', now() - interval '285 days' + interval '5 minutes', now() - interval '285 days' + interval '20 hours'),
@@ -515,7 +597,15 @@ INSERT INTO request_unit (request_id, unit_id, reserved_at, issued_at) VALUES
     (27, 'U97-PLT', now() - interval '278 days' + interval '5 minutes', now() - interval '278 days' + interval '4 hours'),
     (28, 'U83-RBC', now() - interval '254 days' + interval '5 minutes', now() - interval '254 days' + interval '20 hours'),
     (29, 'U94-RBC', now() - interval '189 days' + interval '5 minutes', now() - interval '189 days' + interval '1 hours'),
-    (30, 'U99-PLT', now() - interval '158 days' + interval '5 minutes', now() - interval '158 days' + interval '4 hours');
+    (30, 'U99-PLT', now() - interval '158 days' + interval '5 minutes', now() - interval '158 days' + interval '4 hours'),
+    -- FEFO: the two platelet units collected 13 days ago expire first, so they go; the two from 12 days ago are left over
+    (32, 'U124-PLT', now() - interval '9 days' + interval '5 minutes', now() - interval '9 days' + interval '20 hours'),
+    (32, 'U125-PLT', now() - interval '9 days' + interval '5 minutes', now() - interval '9 days' + interval '20 hours'),
+    (33, 'U115-RBC', now() - interval '295 days' + interval '5 minutes', now() - interval '295 days' + interval '20 hours'),
+    (34, 'U17-RBC', now() - interval '235 days' + interval '5 minutes', now() - interval '235 days' + interval '4 hours'),
+    (35, 'U37-RBC', now() - interval '176 days' + interval '5 minutes', now() - interval '176 days' + interval '20 hours'),
+    (36, 'U116-RBC', now() - interval '115 days' + interval '5 minutes', now() - interval '115 days' + interval '20 hours'),
+    (37, 'U115-PLASMA', now() - interval '290 days' + interval '5 minutes', now() - interval '290 days' + interval '20 hours');
 -- routine red cell demand: every facility issues nearly all its red cells well before the 42-day expiry. Lakeshore fills
 -- standing orders for community hospitals that hold no stock of their own. Within each facility and group units go out
 -- in collection order (FEFO: same shelf life, so oldest = soonest to expire); one unit in 12 is left to expire as wastage
@@ -524,7 +614,8 @@ SELECT row_number() OVER (ORDER BY u.collected_at, u.unit_id) AS n, u.unit_id, u
        u.collected_at + make_interval(days => 3 + position(left(u.blood_group, 1) IN 'OAB') * 2) AS created_at
 FROM v_blood_unit u
 WHERE u.component_code = 'RBC' AND u.status = 'Available' AND u.expires_at <= now()
-  AND NOT EXISTS (SELECT 1 FROM request_unit ru WHERE ru.unit_id = u.unit_id);
+  AND NOT EXISTS (SELECT 1 FROM request_unit ru WHERE ru.unit_id = u.unit_id)
+  AND u.unit_id <> 'U117-RBC';             -- Scenario 5: D-1042's last red cells expired on the shelf
 DELETE FROM past_rbc WHERE n % 12 = 0;
 CREATE TEMP TABLE past_req AS
 SELECT 100 + row_number() OVER (ORDER BY n) AS request_id, unit_id, facility_id, blood_group, created_at,
@@ -546,6 +637,22 @@ DROP TABLE past_rbc, past_req;
 UPDATE blood_unit SET status = 'Reserved' WHERE unit_id IN (SELECT unit_id FROM request_unit);
 UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN (SELECT unit_id FROM request_unit);
 
+-- two earlier donation calls (FR-26, FR-27) for Emergency requests that stock could not cover. Each recipient was notified
+-- (a donor reads the notification when they answer); some never answered.
+INSERT INTO donation_call (call_id, request_id, sent_by, sent_at, message) VALUES
+    (1, 9, 4, now() - interval '170 days' + interval '15 minutes', 'O-negative donors are needed at Riverside General Hospital today. Please book a donation if you can.'),
+    (2, 22, 5, now() - interval '14 days' + interval '20 minutes', 'O-negative donors are needed at Essex County Hospital. Please book a donation this week.');
+INSERT INTO call_recipient (call_id, donor_id, response, responded_at)
+SELECT call_id, donor, response, CASE WHEN response <> 'Pending' THEN c.sent_at + make_interval(hours => hrs) END
+FROM (VALUES (1, 103, 'Accepted', 2), (1, 118, 'Accepted', 5), (1, 112, 'Declined', 3), (1, 137, 'Declined', 20),
+             (1, 141, 'Pending', 0), (1, 147, 'Pending', 0),
+             (2, 148, 'Accepted', 4), (2, 154, 'Declined', 6), (2, 150, 'Declined', 30), (2, 146, 'Pending', 0),
+             (2, 141, 'Pending', 0)) AS v(call_id, donor, response, hrs)
+JOIN donation_call c USING (call_id);
+INSERT INTO notification (user_id, message, created_at, read_at)
+SELECT r.donor_id, c.message, c.sent_at, r.responded_at FROM call_recipient r JOIN donation_call c USING (call_id);
+SELECT setval(pg_get_serial_sequence('vytal.donation_call', 'call_id'), 2);
+
 ALTER TABLE user_account ENABLE TRIGGER audit_user;
 ALTER TABLE facility ENABLE TRIGGER audit_facility;
 ALTER TABLE donor ENABLE TRIGGER audit_donor;
@@ -564,10 +671,15 @@ UPDATE wastage_record w SET wasted_at = t.tested_at
 FROM blood_unit u JOIN test_result t ON t.donation_id = u.donation_id AND t.result = 'Positive'
 WHERE u.unit_id = w.unit_id AND w.cause = 'Discarded';
 
--- minimum stock levels for red cells and platelets at both hospitals (FR-18); the threshold trigger opens alerts at once (FR-19)
+-- minimum stock levels for red cells, plasma and platelets at every site (FR-18); the threshold trigger opens alerts at once
+-- (FR-19). Riverside keeps 6 O-negative red cell units for emergencies (Scenario 1) and 2 A-positive platelet units (Scenario 4).
 INSERT INTO stock_threshold (facility_id, blood_group, component_code, min_units) VALUES
-    (1, 'O+', 'RBC', 4), (1, 'A+', 'RBC', 3), (1, 'O-', 'RBC', 2), (1, 'B+', 'RBC', 1), (1, 'A-', 'RBC', 1), (1, 'O+', 'PLT', 1),
-    (2, 'O+', 'RBC', 4), (2, 'A+', 'RBC', 3), (2, 'O-', 'RBC', 2), (2, 'B+', 'RBC', 1), (2, 'A-', 'RBC', 1), (2, 'O+', 'PLT', 1);
+    (1, 'O+', 'RBC', 4), (1, 'A+', 'RBC', 3), (1, 'O-', 'RBC', 6), (1, 'B+', 'RBC', 1), (1, 'A-', 'RBC', 1),
+    (1, 'O+', 'PLT', 1), (1, 'A+', 'PLT', 2), (1, 'O+', 'PLASMA', 4), (1, 'A+', 'PLASMA', 3), (1, 'AB+', 'PLASMA', 1),
+    (2, 'O+', 'RBC', 4), (2, 'A+', 'RBC', 3), (2, 'O-', 'RBC', 2), (2, 'B+', 'RBC', 1), (2, 'A-', 'RBC', 1),
+    (2, 'O+', 'PLT', 1), (2, 'O+', 'PLASMA', 4), (2, 'A+', 'PLASMA', 3),
+    (3, 'O+', 'RBC', 2), (3, 'O+', 'PLASMA', 4), (3, 'A+', 'PLASMA', 3), (3, 'B+', 'PLASMA', 1),
+    (4, 'O+', 'RBC', 2), (4, 'A+', 'RBC', 1), (4, 'O+', 'PLASMA', 1);
 
 -- open requests, reserved by allocate() (FR-22, FR-23). Scenario 1: Maya's trauma patient TR-2291 has an unknown group,
 -- so only O- red cells can be used; the AB- request at Essex County is also short
@@ -575,19 +687,31 @@ INSERT INTO blood_request (request_id, requested_by, patient_ref, recipient_grou
     (23, 3, 'TR-2291', NULL, 'RBC', 4, 'Emergency', now() + interval '1 hour'),
     (24, 4, 'P-31057', 'A+', 'RBC', 2, 'Urgent', now() + interval '6 hours'),
     (25, 5, 'P-31063', 'O+', 'PLASMA', 2, 'Routine', now() + interval '2 days'),
-    (26, 6, 'P-31078', 'AB-', 'RBC', 3, 'Routine', now() + interval '3 days');
+    (26, 6, 'P-31078', 'AB-', 'RBC', 3, 'Routine', now() + interval '3 days'),
+    (31, 4, 'P-31085', 'B+', 'PLASMA', 2, 'Routine', now() + interval '2 days');
 DO $$ DECLARE r int; got int; BEGIN
     FOR r IN SELECT request_id FROM blood_request WHERE status = 'Open' ORDER BY request_id LOOP CALL allocate(r, got); END LOOP;
 END $$;
 
 -- TR-2291 cannot be covered from stock, so Maya calls every eligible O- donor (FR-25, FR-26). As in Scenario 1, two accept
 -- for the next morning; two decline and the rest have not answered yet (FR-27)
-CALL send_donation_call(23, 3, 'O-negative donors are needed today at Riverside General Hospital. Please book a donation if you can.');
-DO $$ DECLARE r text; d int; ok boolean; BEGIN
+DO $$ DECLARE cid int; r text; d int; ok boolean; BEGIN
+    PERFORM set_config('vytal.user_id', '3', true);
+    CALL send_donation_call(23, 3, 'O-negative donors are needed today at Riverside General Hospital. Please book a donation if you can.',
+                            NULL, cid);
     FOR d, ok IN VALUES (118, TRUE), (146, TRUE), (141, FALSE), (147, FALSE) LOOP
         PERFORM set_config('vytal.user_id', d::text, true);               -- UC-20: each donor answers for themselves
-        CALL respond_to_call(1, d, ok, r);
+        CALL respond_to_call(cid, d, ok, r);
     END LOOP;
+END $$;
+
+-- UC-21: the A-positive surgical patient needed only one of the two units reserved for request 24, so James issues one
+-- and the other goes back on the shelf (Partially Fulfilled)
+DO $$ DECLARE st text; first_unit text[]; BEGIN
+    PERFORM set_config('vytal.user_id', '4', true);
+    first_unit := ARRAY(SELECT ru.unit_id::text FROM request_unit ru JOIN blood_unit b USING (unit_id)
+                        WHERE ru.request_id = 24 AND ru.released_at IS NULL ORDER BY b.expires_at, b.unit_id LIMIT 1);
+    CALL close_request(24, FALSE, first_unit, st);
 END $$;
 
 -- Essex County's AB- patient is one unit short; Thomas calls only the non-O- donors who match, keeping O- donors for
@@ -613,6 +737,22 @@ SELECT setval(pg_get_serial_sequence('vytal.donation', 'donation_id'), (SELECT m
 SELECT setval(pg_get_serial_sequence('vytal.blood_request', 'request_id'), (SELECT max(request_id) FROM blood_request));
 SELECT setval('donor_code_seq', (SELECT max(substr(donor_code, 3)::int) FROM donor));
 
+-- St. Clair's emergency department needs three O-positive red cell units for a surgical patient (UC-16, BR-10: Urgent is due
+-- within 24 hours). Its one O-positive unit is reserved and Helen calls the eligible O-positive donors only, keeping
+-- O-negative donors for emergencies (BR-09); one accepts and one declines (FR-26, FR-27)
+DO $$ DECLARE rid int; got int; short int; cid int; r text; d int; ok boolean; codes text[]; BEGIN
+    PERFORM set_config('vytal.user_id', '9', true);
+    CALL submit_request(9, 'P-31120', 'O+', 'RBC', 3, 'Urgent', now() + interval '12 hours', rid, got, short);
+    codes := ARRAY(SELECT donor_code::text FROM eligible_donors(rid) WHERE blood_group = 'O+' ORDER BY donor_code LIMIT 6);
+    CALL send_donation_call(rid, 9, 'O-positive donors are needed at St. Clair Community Hospital. Please book a donation this week.',
+                            codes, cid);
+    FOR d, ok IN SELECT donor_id, row_number() OVER (ORDER BY donor_id) = 1 FROM call_recipient WHERE call_id = cid
+                 ORDER BY donor_id LIMIT 2 LOOP
+        PERFORM set_config('vytal.user_id', d::text, true);
+        CALL respond_to_call(cid, d, ok, r);
+    END LOOP;
+END $$;
+
 -- Essex County has no platelets on its shelf (they are collected at Riverside), so an Urgent platelet request for a
 -- chemotherapy patient goes straight to a donation call (FR-22, FR-26); one donor accepts, two decline
 DO $$ DECLARE rid int; got int; cid int; r text; d int; ok boolean; BEGIN
@@ -635,6 +775,10 @@ CALL quarantine_donor(128);
 SELECT set_config('vytal.user_id', '7', false);
 CALL record_deferral(7, 128, 'TRAVEL');
 
+-- Scenario 3: quarantining D-1043's O-positive red cells left Lakeshore one unit below its minimum. Marcus's bag from
+-- yesterday passes every test this morning, his three units go on the shelf, and the open alert clears by itself (FR-19)
+CALL record_tests(122, '{"HIV": "Negative", "HBV": "Negative", "HCV": "Negative", "SYPH": "Negative"}');
+
 -- live actions this morning, written to the audit log with the acting user (FR-33):
 -- donor D-1046 (user 131) updates his phone number and address himself (UC-03)
 SELECT set_config('vytal.user_id', '131', false);
@@ -656,6 +800,27 @@ SELECT set_config('vytal.user_id', '1', false);
 -- questionnaire defers her for 30 days (MEDS); the audit log records her as the actor
 SELECT set_config('vytal.user_id', '102', false);
 CALL submit_screening(102, '{"1": false, "2": false, "3": true, "4": false, "5": true, "6": false}');
+SELECT set_config('vytal.user_id', '1', false);
+
+-- UC-24 / FR-32: Kevin (Admin) brings the tattoo deferral wording in line with Canadian Blood Services, which also defers
+-- donors after acupuncture; the rule change is audited (SE-08)
+SELECT set_config('vytal.user_id', '11', false);
+CALL save_deferral_reason(11, 'TATTOO', 'Tattoo, piercing or acupuncture in the last 3 months', FALSE, 90);
+-- Scenario 4, month end: Riverside wasted two of its four A-positive platelet units, so James lowers the minimum (UC-12)
+SELECT set_config('vytal.user_id', '4', false);
+CALL set_threshold(4, 1, 'A+', 'PLT', 1);
+-- notifications are read as they are opened (UC-09, UC-20): Sara reads the positive-test alerts, and the donors who
+-- answered today's O-negative call read theirs
+DO $$ DECLARE n record; BEGIN
+    FOR n IN SELECT nt.notification_id, nt.user_id FROM notification nt
+             WHERE nt.read_at IS NULL AND (nt.user_id = 1 OR nt.user_id IN (
+                 SELECT r.donor_id FROM call_recipient r JOIN donation_call c USING (call_id)
+                 WHERE c.request_id = 23 AND r.response <> 'Pending'))
+             ORDER BY nt.notification_id LOOP
+        PERFORM set_config('vytal.user_id', n.user_id::text, true);
+        CALL mark_notification_read(n.user_id, n.notification_id);
+    END LOOP;
+END $$;
 SELECT set_config('vytal.user_id', '1', false);
 
 -- SE-06: earlier sign-ins today. Every one has ended (logout or idle timeout), so none of these hashes opens a session.
