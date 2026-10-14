@@ -14,5 +14,5 @@ pw_args=()
 [ -n "${VYTAL_REPORT_PW:-}" ] && pw_args+=(-v "report_pw=$VYTAL_REPORT_PW")
 for f in sql/0*.sql; do
     if [ "$f" = sql/07_sample_data.sql ] && [ "${1:-}" = --no-data ]; then continue; fi
-    psql -X -q -v ON_ERROR_STOP=1 "${pw_args[@]}" -f "$f" > /dev/null
+    psql -X -q -v ON_ERROR_STOP=1 ${pw_args[@]+"${pw_args[@]}"} -f "$f" > /dev/null
 done
