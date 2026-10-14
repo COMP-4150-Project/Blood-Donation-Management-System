@@ -22,6 +22,9 @@ GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA vytal TO vytal_app;
 REVOKE INSERT, UPDATE ON audit_log FROM vytal_app;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA vytal TO vytal_app;
 GRANT EXECUTE ON ALL ROUTINES IN SCHEMA vytal TO vytal_app;
+-- SE-06: sessions change only through the SECURITY DEFINER session procedures, and token hashes are never readable
+REVOKE ALL ON user_session FROM vytal_app;
+GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_app;
 
 -- reporting (FR-34 dashboards, analytics queries): read-only, and no login secrets
 GRANT USAGE ON SCHEMA vytal TO vytal_report;
@@ -32,3 +35,7 @@ GRANT SELECT (user_id, first_name, last_name, role, is_active, created_at) ON us
 -- a column grant is simpler than a filtering view and cannot drift from the table
 REVOKE SELECT ON audit_log FROM vytal_report;
 GRANT SELECT (audit_id, user_id, action, table_name, record_id, field_name, changed_at) ON audit_log TO vytal_report;
+-- the read-only calculations the views and key queries call (v_donor_eligibility, Q03); never a procedure
+GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int) TO vytal_report;
+REVOKE SELECT ON user_session FROM vytal_report;
+GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_report;

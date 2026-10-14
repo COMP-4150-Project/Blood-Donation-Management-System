@@ -24,6 +24,14 @@ def test_query_runs_returns_rows_and_is_fast(sdb, name):
     assert time.perf_counter() - t < 2.0             # PR-01's 2-second bound; measured timings are in bench/
 
 
+@pytest.mark.parametrize("name", sorted(QUERIES))
+def test_query_runs_as_the_read_only_report_role(sdb, name):
+    """FR-34 / SE-04: dashboards connect as vytal_report, so every key query must work with its read-only grants."""
+    sdb.cur.execute("SET LOCAL ROLE vytal_report")
+    sdb.cur.execute(QUERIES[name].sql)
+    assert sdb.cur.fetchall()
+
+
 def test_every_query_names_a_requirement():
     assert all(q.serves and q.why and q.title for q in QUERIES.values())
 

@@ -90,8 +90,8 @@ class DB:
         self.fac_b = self.one("INSERT INTO facility (name,facility_type,address) VALUES ('Lakeshore Blood Centre','Blood Bank','2 Lake St') RETURNING facility_id")
         self.admin = self.user("Admin")
         self.q("INSERT INTO admin VALUES (%s)", (self.admin,))
-        self.nurse = self.one("SELECT create_staff(%s,'nurse@v.ca','x','Maya','Ross',%s,'Nurse')", (self.admin, self.fac_h))
-        self.phleb = self.one("SELECT create_staff(%s,'phleb@v.ca','x','Lee','Park',%s,'Phlebotomist')", (self.admin, self.fac_b))
+        self.nurse = self.one("CALL create_staff(%s,'nurse@v.ca','x','Maya','Ross',%s,'Nurse')", (self.admin, self.fac_h))
+        self.phleb = self.one("CALL create_staff(%s,'phleb@v.ca','x','Lee','Park',%s,'Phlebotomist')", (self.admin, self.fac_b))
         return self
 
     def user(self, role):
@@ -99,15 +99,17 @@ class DB:
         return self.one("INSERT INTO user_account (email,password_hash,first_name,last_name,role) VALUES (%s,'x','A','B',%s) RETURNING user_id",
                         (f"u{self.seq}@v.ca", role))
 
-    def donor(self, group="O+", sex="M", age=30, kg=70, verified=True):
+    def donor(self, group="O+", sex="M", age=30, kg=70, verified=True, screened=False):
         self.seq += 1
-        uid = self.one("SELECT register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,%s,%s,'1 Main St',%s)",
+        uid = self.one("CALL register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,%s,%s,'1 Main St',%s)",
                        (f"d{self.seq}@v.ca", age, sex, kg, group))
         if verified:                                    # staff verify as themselves (FR-09), then the caller's session is restored
             prev = self.one("SELECT current_setting('vytal.user_id', true)")
             self.q("SELECT set_config('vytal.user_id', %s, true)", (str(self.nurse),))
             self.q("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (self.nurse, uid))
             self.q("SELECT set_config('vytal.user_id', %s, true)", (prev or "",))
+        if screened:                                    # a screening on record (UC-05 2a), taken yesterday
+            self.screen(uid, days_ago=1)
         return uid
 
     def screen(self, donor, days_ago=0):
@@ -125,8 +127,8 @@ class DB:
         ids = []
         for _ in range(n):
             dn = self.donate(self.donor(group), days_ago=days_ago)
-            ids += [u for (u,) in self.q("SELECT separate_donation(%s,%s)", (dn, list(comps)))]
-            self.one("SELECT record_tests(%s, %s)", (dn, '{"HIV":"Negative","HBV":"Negative","HCV":"Negative","SYPH":"Negative"}'))
+            ids += self.one("CALL separate_donation(%s,%s)", (dn, list(comps)))
+            self.one("CALL record_tests(%s, %s)", (dn, '{"HIV":"Negative","HBV":"Negative","HCV":"Negative","SYPH":"Negative"}'))
         return ids
 
     def request(self, group, n=1, comp="RBC", urgency="Routine"):

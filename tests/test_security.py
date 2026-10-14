@@ -55,14 +55,17 @@ def test_routines_refuse_a_user_id_that_is_not_the_session_user(db):
     d, u = db.donor(), db.stock("O+")[0]
     db.q("SET LOCAL ROLE vytal_app")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
-    for sql, args in (("SELECT create_admin(%s,'evil@v.ca','x','E','V')", (db.admin,)),
-                      ("SELECT create_staff(%s,'evil2@v.ca','x','E','V',%s,'Nurse')", (db.admin, db.fac_h)),
-                      ("SELECT set_threshold(%s,%s,'O-','RBC',9)", (db.nurse, db.fac_h)),
-                      ("SELECT discard_unit(%s,%s,'x')", (db.nurse, u)),
-                      ("SELECT record_deferral(%s,%s,'HIV')", (db.nurse, d))):
+    for sql, args in (("CALL create_admin(%s,'evil@v.ca','x','E','V')", (db.admin,)),
+                      ("CALL create_staff(%s,'evil2@v.ca','x','E','V',%s,'Nurse')", (db.admin, db.fac_h)),
+                      ("CALL set_threshold(%s,%s,'O-','RBC',9)", (db.nurse, db.fac_h)),
+                      ("CALL discard_unit(%s,%s,'x')", (db.nurse, u)),
+                      ("CALL record_deferral(%s,%s,'HIV')", (db.nurse, d)),
+                      ("CALL verify_blood_group(%s,%s,'O-')", (db.nurse, d)),
+                      ("CALL submit_request(%s,'P-1','O+','RBC',1,'Routine',now())", (db.nurse,)),
+                      ("CALL confirm_request_group(%s,1,'O+')", (db.nurse,))):
         assert "acting user does not match the session" in db.fails(sql, args)
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
-    assert db.one("SELECT create_admin(%s,'ok@v.ca','x','O','K')", (db.admin,)) > 0
+    assert db.one("CALL create_admin(%s,'ok@v.ca','x','O','K')", (db.admin,)) > 0
 
 
 def test_report_role_cannot_read_audit_values(db):
@@ -86,10 +89,10 @@ def test_screening_is_entered_by_the_donor_or_staff(db):
     db.q("SET LOCAL ROLE vytal_app")
     for who in (other, db.admin):
         db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
-        assert "entered by the donor or by staff" in db.fails("SELECT submit_screening(%s,%s)", (d, answers))
+        assert "entered by the donor or by staff" in db.fails("CALL submit_screening(%s,%s)", (d, answers))
     for who in (d, db.nurse):
         db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
-        assert db.one("SELECT submit_screening(%s,%s)", (d, answers)) > 0
+        assert db.one("CALL submit_screening(%s,%s)", (d, answers)) > 0
 
 
 def test_only_the_called_donor_answers_a_call(db):
@@ -97,7 +100,7 @@ def test_only_the_called_donor_answers_a_call(db):
     d, other = db.donor(), db.donor()
     db.q("SET LOCAL ROLE vytal_app")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(other),))
-    assert "acting user does not match the session" in db.fails("SELECT respond_to_call(1,%s,TRUE)", (d,))
+    assert "acting user does not match the session" in db.fails("CALL respond_to_call(1,%s,TRUE)", (d,))
 
 
 def test_a_donor_cannot_be_inserted_already_verified(db):

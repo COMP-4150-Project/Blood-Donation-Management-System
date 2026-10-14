@@ -1,11 +1,24 @@
 SET search_path = vytal;
 
--- Jobs are procedures (CALL); operations that hand a value back to the caller are functions (SELECT).
+-- Routine kinds. Every command the application or a job runs to change data is a PROCEDURE, run with CALL; any result it
+-- hands back (a new id, a status) comes back in INOUT parameters as one row. FUNCTIONS are kept for what a procedure
+-- cannot be: trigger functions, read-only calculations used inside queries (donor_eligibility, eligible_donors), and
+-- small internal helpers used in expressions (require_role, require_session_user, recompute_next_eligible, refresh_alert).
+-- separate_donation returns its new unit ids as an array, so it is a procedure like the other commands.
 
 -- ---------------------------------------------------------------- FR-20 / UC-14 nightly expiry job
-CREATE PROCEDURE run_nightly_expiry(INOUT expired int DEFAULT NULL) LANGUAGE plpgsql SET search_path = vytal, pg_temp AS $$
+-- SECURITY DEFINER because it writes the job's audit row, which the application role cannot do directly.
+CREATE PROCEDURE run_nightly_expiry(INOUT expired int DEFAULT NULL) LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = vytal, pg_temp AS $$
 BEGIN
-    expired := expire_units();
+    -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
+    UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
+      AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
+    UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now();
+    UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
+    WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
+    GET DIAGNOSTICS expired = ROW_COUNT;
+    INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'run_nightly_expiry', expired::text);
     RAISE NOTICE 'expired % unit(s)', expired;
 END $$;
 
@@ -30,58 +43,56 @@ END $$;
 
 -- ---------------------------------------------------------------- FR-01 donor self-registration (supertype + subtype in one transaction)
 CREATE SEQUENCE donor_code_seq START 1001;           -- donor codes D-1001, D-1002, ... as in the Step 2 scenarios
-CREATE FUNCTION register_donor(p_email text, p_password_hash text, p_first text, p_last text, p_phone text,
-                               p_dob date, p_sex char, p_weight numeric, p_address text, p_blood_group text)
-RETURNS int LANGUAGE plpgsql AS $$
-DECLARE uid int;
+CREATE PROCEDURE register_donor(p_email text, p_password_hash text, p_first text, p_last text, p_phone text,
+                                p_dob date, p_sex char, p_weight numeric, p_address text, p_blood_group text,
+                                INOUT new_user_id int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO user_account (email, password_hash, first_name, last_name, phone, role)
-    VALUES (lower(p_email), p_password_hash, p_first, p_last, p_phone, 'Donor') RETURNING user_id INTO uid;
+    VALUES (lower(p_email), p_password_hash, p_first, p_last, p_phone, 'Donor') RETURNING user_id INTO new_user_id;
     -- the self-reported group stays unverified (verified_by NULL) until staff confirm it (FR-09)
     INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group)
-    VALUES (uid, 'D-' || nextval('donor_code_seq'), p_dob, p_sex, p_weight, p_address, p_blood_group);
-    RETURN uid;
+    VALUES (new_user_id, 'D-' || nextval('donor_code_seq'), p_dob, p_sex, p_weight, p_address, p_blood_group);
 END $$;
 
 -- ---------------------------------------------------------------- FR-04 an Admin creates a staff account tied to one facility
-CREATE FUNCTION create_staff(p_admin int, p_email text, p_password_hash text, p_first text, p_last text,
-                             p_facility int, p_job_title text)
-RETURNS int LANGUAGE plpgsql AS $$
-DECLARE uid int;
+CREATE PROCEDURE create_staff(p_admin int, p_email text, p_password_hash text, p_first text, p_last text,
+                              p_facility int, p_job_title text, INOUT new_user_id int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
     IF NOT EXISTS (SELECT 1 FROM facility WHERE facility_id = p_facility AND is_active) THEN
         RAISE EXCEPTION 'facility % does not exist or is inactive', p_facility; END IF;
     INSERT INTO user_account (email, password_hash, first_name, last_name, role, created_by)
-    VALUES (lower(p_email), p_password_hash, p_first, p_last, 'Staff', p_admin) RETURNING user_id INTO uid;
-    INSERT INTO staff (user_id, facility_id, job_title) VALUES (uid, p_facility, p_job_title);
-    RETURN uid;
+    VALUES (lower(p_email), p_password_hash, p_first, p_last, 'Staff', p_admin) RETURNING user_id INTO new_user_id;
+    INSERT INTO staff (user_id, facility_id, job_title) VALUES (new_user_id, p_facility, p_job_title);
 END $$;
 
 -- ---------------------------------------------------------------- SE-05 lock for 15 minutes after 5 failed logins in a row
 -- The password hash is checked by the application; this records the outcome atomically.
-CREATE FUNCTION login_attempt(p_user int, p_password_ok boolean) RETURNS text LANGUAGE plpgsql AS $$
+CREATE PROCEDURE login_attempt(p_user int, p_password_ok boolean, INOUT outcome text DEFAULT NULL) LANGUAGE plpgsql AS $$
 DECLARE a user_account%ROWTYPE;
 BEGIN
     SELECT * INTO a FROM user_account WHERE user_id = p_user FOR UPDATE;
-    IF NOT FOUND THEN RETURN 'failed'; END IF;
-    IF NOT a.is_active THEN RETURN CASE WHEN p_password_ok THEN 'inactive' ELSE 'failed' END; END IF;
-    IF a.locked_until > now() THEN RETURN 'locked'; END IF;
+    IF NOT FOUND THEN outcome := 'failed'; RETURN; END IF;
+    IF NOT a.is_active THEN outcome := CASE WHEN p_password_ok THEN 'inactive' ELSE 'failed' END; RETURN; END IF;
+    IF a.locked_until > now() THEN outcome := 'locked'; RETURN; END IF;
     IF p_password_ok THEN
         UPDATE user_account SET failed_logins = 0, locked_until = NULL WHERE user_id = p_user;
-        RETURN 'ok';
+        outcome := 'ok'; RETURN;
     END IF;
     IF a.failed_logins + 1 >= 5 THEN
         UPDATE user_account SET failed_logins = 0, locked_until = now() + interval '15 minutes' WHERE user_id = p_user;
-        RETURN 'locked';
+        outcome := 'locked'; RETURN;
     END IF;
     UPDATE user_account SET failed_logins = a.failed_logins + 1 WHERE user_id = p_user;
-    RETURN 'failed';
+    outcome := 'failed';
 END $$;
 
 -- ---------------------------------------------------------------- FR-06 / FR-08 screening; deferring answers create system deferrals
 -- p_answers maps question_id -> answer, e.g. '{"1": true, "2": true}'. Every active question must be answered.
-CREATE FUNCTION submit_screening(p_donor int, p_answers jsonb) RETURNS int LANGUAGE plpgsql AS $$
+CREATE PROCEDURE submit_screening(p_donor int, p_answers jsonb, INOUT new_screening_id int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 DECLARE sid int; missing int; actor int := nullif(current_setting('vytal.user_id', true), '')::int;
 BEGIN
     -- UC-04: the donor answers for themselves, or staff enter the answers at the clinic
@@ -100,66 +111,108 @@ BEGIN
     SELECT p_donor, q.reason_code, CURRENT_DATE + r.default_days, sid
     FROM screening_answer a JOIN screening_question q USING (question_id) JOIN deferral_reason r USING (reason_code)
     WHERE a.screening_id = sid AND a.answer = q.defer_on_answer;
-    RETURN sid;
+    new_screening_id := sid;
 END $$;
 
 -- ---------------------------------------------------------------- FR-11 / UC-07 record a donation; low hemoglobin defers instead (UC-07 2a)
--- Returns the new donation_id, or NULL when the reading was below the donor's minimum and a LOWHB deferral was recorded.
+-- Hands back the new donation_id, or NULL when the reading was below the donor's minimum and a LOWHB deferral was recorded.
 -- Every other eligibility rule is still enforced by the check_donation_eligible trigger.
-CREATE FUNCTION record_donation(p_donor int, p_staff int, p_type text, p_volume int, p_hemoglobin numeric)
-RETURNS int LANGUAGE plpgsql AS $$
-DECLARE dn int;
+CREATE PROCEDURE record_donation(p_donor int, p_staff int, p_type text, p_volume int, p_hemoglobin numeric,
+                                 INOUT new_donation_id int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 BEGIN
+    new_donation_id := NULL;
     IF p_hemoglobin < (SELECT r.min_hemoglobin_gl FROM donor o JOIN eligibility_rule r USING (sex) WHERE o.user_id = p_donor) THEN
         INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by)
         SELECT p_donor, 'LOWHB', CURRENT_DATE + default_days, p_staff FROM deferral_reason WHERE reason_code = 'LOWHB';
-        RETURN NULL;
+        RETURN;
     END IF;
     INSERT INTO donation (donor_id, recorded_by, donation_type_code, donated_at, volume_ml, hemoglobin_gl)
-    VALUES (p_donor, p_staff, p_type, now(), p_volume, p_hemoglobin) RETURNING donation_id INTO dn;
-    RETURN dn;
+    VALUES (p_donor, p_staff, p_type, now(), p_volume, p_hemoglobin) RETURNING donation_id INTO new_donation_id;
 END $$;
 
 -- ---------------------------------------------------------------- FR-12 split a donation into one unit per component
-CREATE FUNCTION separate_donation(p_donation int, p_components text[]) RETURNS SETOF varchar LANGUAGE plpgsql AS $$
+-- Hands back the new unit ids in the order the components were given.
+CREATE PROCEDURE separate_donation(p_donation int, p_components text[], INOUT unit_ids varchar[] DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+DECLARE pending int;
 BEGIN
     IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN
         RAISE EXCEPTION 'donation % was discarded', p_donation; END IF;
-    RETURN QUERY
-    INSERT INTO blood_unit (unit_id, donation_id, component_code)
-    SELECT format('U%s-%s', p_donation, c), p_donation, c FROM unnest(p_components) AS c
-    RETURNING unit_id;
-    PERFORM release_tested(p_donation);          -- tests may already be in when the bag is split
+    WITH made AS (
+        INSERT INTO blood_unit (unit_id, donation_id, component_code)
+        SELECT format('U%s-%s', p_donation, c), p_donation, c FROM unnest(p_components) AS c
+        RETURNING unit_id, component_code)
+    SELECT array_agg(unit_id ORDER BY array_position(p_components, component_code::text)) INTO unit_ids FROM made;
+    CALL release_tested(p_donation, pending);    -- tests may already be in when the bag is split
 END $$;
 
 -- ---------------------------------------------------------------- FR-13 release a donation's units once every active test is negative
--- Returns the number of units still waiting for tests (0 = released or nothing to release).
-CREATE FUNCTION release_tested(p_donation int) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE pending int;
+-- Hands back the number of active tests still missing (0 = released or nothing to release).
+CREATE PROCEDURE release_tested(p_donation int, INOUT pending_tests int DEFAULT NULL) LANGUAGE plpgsql AS $$
 BEGIN
-    SELECT count(*) INTO pending FROM test_type t
+    SELECT count(*) INTO pending_tests FROM test_type t
     WHERE t.is_active AND NOT EXISTS (SELECT 1 FROM test_result r WHERE r.donation_id = p_donation AND r.test_code = t.test_code);
-    IF pending = 0 AND (SELECT status FROM donation WHERE donation_id = p_donation) <> 'Discarded' THEN
+    IF pending_tests = 0 AND (SELECT status FROM donation WHERE donation_id = p_donation) <> 'Discarded' THEN
         UPDATE blood_unit SET status = 'Available' WHERE donation_id = p_donation AND status = 'Collected';
     END IF;
-    RETURN pending;
 END $$;
 
 -- p_results maps test_code -> 'Negative' | 'Positive'. A positive result fires on_positive_test (discard + flag).
-CREATE FUNCTION record_tests(p_donation int, p_results jsonb) RETURNS text LANGUAGE plpgsql AS $$
+CREATE PROCEDURE record_tests(p_donation int, p_results jsonb, INOUT outcome text DEFAULT NULL) LANGUAGE plpgsql AS $$
 DECLARE pending int;
 BEGIN
     INSERT INTO test_result (donation_id, test_code, result)
     SELECT p_donation, key, value FROM jsonb_each_text(p_results);
-    IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN RETURN 'Discarded'; END IF;
-    pending := release_tested(p_donation);
-    RETURN CASE WHEN pending > 0 THEN format('Awaiting %s test(s)', pending) ELSE 'Released' END;
+    IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN outcome := 'Discarded'; RETURN; END IF;
+    CALL release_tested(p_donation, pending);
+    outcome := CASE WHEN pending > 0 THEN format('Awaiting %s test(s)', pending) ELSE 'Released' END;
+END $$;
+
+-- ---------------------------------------------------------------- FR-09 staff verify a donor's group, as themselves
+CREATE PROCEDURE verify_blood_group(p_staff int, p_donor int, p_group text) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_staff, 'Staff');
+    UPDATE donor SET blood_group = p_group, verified_by = p_staff, verified_at = now() WHERE user_id = p_donor;
+    IF NOT FOUND THEN RAISE EXCEPTION 'donor % not found', p_donor; END IF;
+END $$;
+
+-- ---------------------------------------------------------------- FR-22 + FR-23 submit a request and reserve what stock covers
+CREATE PROCEDURE submit_request(p_staff int, p_patient_ref text, p_group text, p_component text, p_units int, p_urgency text,
+                                p_required_by timestamptz, INOUT new_request int DEFAULT NULL,
+                                INOUT reserved_count int DEFAULT NULL, INOUT shortfall_count int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+DECLARE got int;
+BEGIN
+    PERFORM require_role(p_staff, 'Staff');
+    INSERT INTO blood_request (requested_by, patient_ref, recipient_group, component_code, units_requested, urgency, required_by)
+    VALUES (p_staff, p_patient_ref, p_group, p_component, p_units, p_urgency, p_required_by) RETURNING request_id INTO new_request;
+    CALL allocate(new_request, got);
+    SELECT s.units_reserved, s.shortfall INTO reserved_count, shortfall_count FROM v_request_status s WHERE s.request_id = new_request;
+END $$;
+
+-- ---------------------------------------------------------------- UC-16 step 6 the lab confirms an Unknown group; reserve again
+CREATE PROCEDURE confirm_request_group(p_staff int, p_request int, p_group text,
+                                       INOUT reserved_count int DEFAULT NULL, INOUT shortfall_count int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+DECLARE got int;
+BEGIN
+    PERFORM require_role(p_staff, 'Staff');
+    IF (SELECT facility_id FROM v_request WHERE request_id = p_request)
+       IS DISTINCT FROM (SELECT facility_id FROM staff WHERE user_id = p_staff) THEN
+        RAISE EXCEPTION 'request % belongs to another facility', p_request; END IF;
+    UPDATE blood_request SET recipient_group = p_group
+    WHERE request_id = p_request AND recipient_group IS NULL AND status = 'Open';
+    IF NOT FOUND THEN RAISE EXCEPTION 'request % is closed or already has a confirmed group', p_request; END IF;
+    CALL allocate(p_request, got);
+    SELECT s.units_reserved, s.shortfall INTO reserved_count, shortfall_count FROM v_request_status s WHERE s.request_id = p_request;
 END $$;
 
 -- ---------------------------------------------------------------- FR-26 donation call to eligible, compatible donors only
 -- p_donor_codes NULL = call every match from eligible_donors(); otherwise only the listed codes that match.
-CREATE FUNCTION send_donation_call(p_request int, p_staff int, p_message text, p_donor_codes text[] DEFAULT NULL)
-RETURNS int LANGUAGE plpgsql AS $$
+CREATE PROCEDURE send_donation_call(p_request int, p_staff int, p_message text, p_donor_codes text[] DEFAULT NULL,
+                                    INOUT new_call_id int DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 DECLARE cid int; n int;
 BEGIN
     IF (SELECT status FROM blood_request WHERE request_id = p_request) IS DISTINCT FROM 'Open' THEN
@@ -172,12 +225,12 @@ BEGIN
     IF n = 0 THEN RAISE EXCEPTION 'no eligible, compatible donor to call for request %', p_request; END IF;
     INSERT INTO notification (user_id, message)
     SELECT donor_id, p_message FROM call_recipient WHERE call_id = cid;
-    RETURN cid;
+    new_call_id := cid;
 END $$;
 
 -- ---------------------------------------------------------------- FR-27 / UC-20 a donor answers a call once
--- Returns the facility's name, address and phone on accept, 'declined', or 'closed' when the request no longer needs donors (2a).
-CREATE FUNCTION respond_to_call(p_call int, p_donor int, p_accept boolean) RETURNS text LANGUAGE plpgsql AS $$
+-- Hands back the facility's name, address and phone on accept, 'declined', or 'closed' when the request no longer needs donors (2a).
+CREATE PROCEDURE respond_to_call(p_call int, p_donor int, p_accept boolean, INOUT reply text DEFAULT NULL) LANGUAGE plpgsql AS $$
 DECLARE st text; fname text; faddr text; fphone text;
 BEGIN
     PERFORM require_session_user(p_donor);          -- UC-20: only the called donor answers
@@ -186,30 +239,29 @@ BEGIN
     JOIN staff s ON s.user_id = br.requested_by JOIN facility fa ON fa.facility_id = s.facility_id
     WHERE cr.call_id = p_call AND cr.donor_id = p_donor AND cr.response = 'Pending';
     IF NOT FOUND THEN RAISE EXCEPTION 'no pending call % for donor %', p_call, p_donor; END IF;
-    IF st <> 'Open' THEN RETURN 'closed'; END IF;
+    IF st <> 'Open' THEN reply := 'closed'; RETURN; END IF;
     UPDATE call_recipient SET response = CASE WHEN p_accept THEN 'Accepted' ELSE 'Declined' END, responded_at = now()
     WHERE call_id = p_call AND donor_id = p_donor;
-    RETURN CASE WHEN p_accept THEN concat_ws(', ', fname, faddr, fphone) ELSE 'declined' END;
+    reply := CASE WHEN p_accept THEN concat_ws(', ', fname, faddr, fphone) ELSE 'declined' END;
 END $$;
 
 -- ---------------------------------------------------------------- UC-06 / FR-08 staff record a deferral at the in-person check
 -- A temporary reason without an end date gets the reason's default length; a permanent reason takes no end date (2a).
-CREATE FUNCTION record_deferral(p_staff int, p_donor int, p_reason text, p_end date DEFAULT NULL) RETURNS int
+CREATE PROCEDURE record_deferral(p_staff int, p_donor int, p_reason text, p_end date DEFAULT NULL,
+                                 INOUT new_deferral_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE id int;
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
     INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by)
     SELECT p_donor, reason_code, CASE WHEN is_permanent THEN p_end ELSE coalesce(p_end, CURRENT_DATE + default_days) END, p_staff
-    FROM deferral_reason WHERE reason_code = p_reason RETURNING deferral_id INTO id;
-    IF id IS NULL THEN RAISE EXCEPTION 'unknown deferral reason %', p_reason; END IF;
-    RETURN id;
+    FROM deferral_reason WHERE reason_code = p_reason RETURNING deferral_id INTO new_deferral_id;
+    IF new_deferral_id IS NULL THEN RAISE EXCEPTION 'unknown deferral reason %', p_reason; END IF;
 END $$;
 
 -- ---------------------------------------------------------------- UC-15 / FR-16 discard a damaged or unsafe unit (Table 1)
 -- Staff discard Available units at their own facility; an Admin discards a Quarantined unit once the lookback
 -- confirms it (UC-22). A Reserved unit must be released from its request first (2a). Collected -> Discarded is UC-09's.
-CREATE FUNCTION discard_unit(p_user int, p_unit text, p_reason text) RETURNS void LANGUAGE plpgsql AS $$
+CREATE PROCEDURE discard_unit(p_user int, p_unit text, p_reason text) LANGUAGE plpgsql AS $$
 DECLARE u blood_unit%ROWTYPE; r text; fac int;
 BEGIN
     PERFORM require_session_user(p_user);
@@ -228,7 +280,7 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------- UC-12 / FR-18 staff set their own facility's minimums; an Admin any
-CREATE FUNCTION set_threshold(p_user int, p_fac int, p_group text, p_comp text, p_min int) RETURNS void LANGUAGE plpgsql AS $$
+CREATE PROCEDURE set_threshold(p_user int, p_fac int, p_group text, p_comp text, p_min int) LANGUAGE plpgsql AS $$
 DECLARE r text; fac int;
 BEGIN
     PERFORM require_session_user(p_user);
@@ -242,19 +294,18 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------- UC-23 / FR-04, FR-05, FR-35 accounts and facilities
-CREATE FUNCTION create_admin(p_admin int, p_email text, p_password_hash text, p_first text, p_last text) RETURNS int
+CREATE PROCEDURE create_admin(p_admin int, p_email text, p_password_hash text, p_first text, p_last text,
+                              INOUT new_user_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE uid int;
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
     INSERT INTO user_account (email, password_hash, first_name, last_name, role, created_by)
-    VALUES (lower(p_email), p_password_hash, p_first, p_last, 'Admin', p_admin) RETURNING user_id INTO uid;
-    INSERT INTO admin (user_id) VALUES (uid);
-    RETURN uid;
+    VALUES (lower(p_email), p_password_hash, p_first, p_last, 'Admin', p_admin) RETURNING user_id INTO new_user_id;
+    INSERT INTO admin (user_id) VALUES (new_user_id);
 END $$;
 
 -- accounts are deactivated, never deleted (traceability); reactivating also clears a lockout
-CREATE FUNCTION set_account_active(p_admin int, p_user int, p_active boolean) RETURNS void LANGUAGE plpgsql AS $$
+CREATE PROCEDURE set_account_active(p_admin int, p_user int, p_active boolean) LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
     UPDATE user_account SET is_active = p_active, failed_logins = 0, locked_until = NULL WHERE user_id = p_user;
@@ -262,7 +313,7 @@ BEGIN
 END $$;
 
 -- 2a: a facility with open requests cannot be deactivated until they are closed or moved
-CREATE FUNCTION set_facility_active(p_admin int, p_fac int, p_active boolean) RETURNS void LANGUAGE plpgsql AS $$
+CREATE PROCEDURE set_facility_active(p_admin int, p_fac int, p_active boolean) LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
     IF NOT p_active AND EXISTS (SELECT 1 FROM v_request WHERE facility_id = p_fac AND status = 'Open') THEN
@@ -271,27 +322,26 @@ BEGIN
     IF NOT FOUND THEN RAISE EXCEPTION 'facility % not found', p_fac; END IF;
 END $$;
 
--- p_id NULL creates a facility; otherwise edits it. Returns the facility_id.
-CREATE FUNCTION save_facility(p_admin int, p_id int, p_name text, p_type text, p_address text, p_phone text, p_email text)
-RETURNS int LANGUAGE plpgsql AS $$
-DECLARE id int;
+-- p_id NULL creates a facility and comes back holding the new id; otherwise the facility p_id is edited.
+CREATE PROCEDURE save_facility(p_admin int, INOUT p_id int, p_name text, p_type text, p_address text, p_phone text, p_email text)
+LANGUAGE plpgsql AS $$
+DECLARE found_id int;
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
     IF p_id IS NULL THEN
         INSERT INTO facility (name, facility_type, address, phone, email) VALUES (p_name, p_type, p_address, p_phone, p_email)
-        RETURNING facility_id INTO id;
+        RETURNING facility_id INTO p_id;
     ELSE
         UPDATE facility SET name = p_name, facility_type = p_type, address = p_address, phone = p_phone, email = p_email
-        WHERE facility_id = p_id RETURNING facility_id INTO id;
-        IF id IS NULL THEN RAISE EXCEPTION 'facility % not found', p_id; END IF;
+        WHERE facility_id = p_id RETURNING facility_id INTO found_id;
+        IF found_id IS NULL THEN RAISE EXCEPTION 'facility % not found', p_id; END IF;
     END IF;
-    RETURN id;
 END $$;
 
 -- ---------------------------------------------------------------- UC-03 / FR-03 a donor edits their contact details and weight
 -- The blood group is not a parameter: once verified only staff change it (donor_group_guard).
-CREATE FUNCTION update_donor_profile(p_donor int, p_phone text, p_email text, p_address text, p_weight numeric)
-RETURNS void LANGUAGE plpgsql AS $$
+CREATE PROCEDURE update_donor_profile(p_donor int, p_phone text, p_email text, p_address text, p_weight numeric)
+LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_donor, 'Donor');
     UPDATE user_account SET phone = p_phone, email = lower(p_email) WHERE user_id = p_donor;

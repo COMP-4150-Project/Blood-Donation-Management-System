@@ -77,7 +77,7 @@ def test_deferral_rules_and_eligibility_dates(db):
 def test_units_get_expiry_location_and_donation_status(db):
     dn = db.donate(db.donor(), staff=db.phleb)
     assert db.one("SELECT status FROM donation WHERE donation_id=%s", (dn,)) == "Awaiting separation"
-    db.q("SELECT separate_donation(%s, ARRAY['RBC','PLASMA','PLT'])", (dn,))
+    db.q("CALL separate_donation(%s, ARRAY['RBC','PLASMA','PLT'])", (dn,))
     assert db.one("SELECT status FROM donation WHERE donation_id=%s", (dn,)) == "Separated"
     days = dict(db.q("SELECT component_code, round(extract(epoch FROM expires_at - collected_at) / 86400)::int "
                      "FROM v_blood_unit WHERE donation_id=%s", (dn,)))
@@ -93,13 +93,13 @@ def test_expiry_before_collection_rejected(db):
 
 def test_collected_unit_cannot_be_quarantined(db):
     """BR-12: lookback quarantine applies to Available and Reserved units only (Table 1)."""
-    unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (db.donate(db.donor()),))
+    unit = db.one("CALL separate_donation(%s, ARRAY['RBC'])", (db.donate(db.donor()),))[0]
     assert "invalid unit status" in db.fails("UPDATE blood_unit SET status='Quarantined' WHERE unit_id=%s", (unit,))
 
 
 def test_release_needs_every_test_negative(db):
     dn = db.donate(db.donor())
-    unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))
+    unit = db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))[0]
     assert "tests missing" in db.fails("UPDATE blood_unit SET status='Available' WHERE unit_id=%s", (unit,))
     db.q("INSERT INTO test_result (donation_id,test_code,result) VALUES (%s,'HIV','Negative')", (dn,))
     assert "tests missing" in db.fails("UPDATE blood_unit SET status='Available' WHERE unit_id=%s", (unit,))
@@ -122,7 +122,7 @@ def test_invalid_status_changes(db, path, bad):
 def test_positive_test_discards_flags_and_notifies(db):
     d = db.donor()
     dn = db.donate(d)
-    db.q("SELECT separate_donation(%s, ARRAY['RBC','PLASMA'])", (dn,))
+    db.q("CALL separate_donation(%s, ARRAY['RBC','PLASMA'])", (dn,))
     db.q("INSERT INTO test_result (donation_id,test_code,result) VALUES (%s,'HBV','Positive')", (dn,))
     assert db.q("SELECT DISTINCT status FROM blood_unit WHERE donation_id=%s", (dn,)) == [("Discarded",)]
     assert db.one("SELECT count(*) FROM wastage_record w JOIN blood_unit u USING (unit_id) WHERE donation_id=%s AND cause='Discarded'", (dn,)) == 2
@@ -149,9 +149,9 @@ def test_alert_opens_and_clears_with_stock(db):
     units = db.stock("O+", n=2)
     assert open_alerts(db, "O+") == 0
     r = db.request("O+")
-    db.q("SELECT allocate(%s)", (r,))
+    db.q("CALL allocate(%s)", (r,))
     assert open_alerts(db, "O+") == 1
-    db.q("SELECT close_request(%s, TRUE)", (r,))
+    db.q("CALL close_request(%s, TRUE)", (r,))
     assert open_alerts(db, "O+") == 0
     assert db.one("SELECT count(*) FROM blood_unit WHERE unit_id = ANY(%s) AND status='Available'", (units,)) == 2
 
@@ -168,7 +168,7 @@ def test_one_statement_opens_and_clears_alerts_for_different_groups(db):
     """The statement-level alert check sees every group a multi-row UPDATE touched (PR-05 bulk path)."""
     (falling,) = db.stock("O+")
     dn = db.donate(db.donor("A+"))
-    (rising,) = [u for (u,) in db.q("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))]
+    (rising,) = db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))
     for t in ("HIV", "HBV", "HCV", "SYPH"):
         db.q("INSERT INTO test_result (donation_id, test_code, result) VALUES (%s,%s,'Negative')", (dn, t))
     db.q("INSERT INTO stock_threshold VALUES (%s,'O+','RBC',1), (%s,'A+','RBC',1)", (db.fac_h, db.fac_h))
@@ -219,7 +219,7 @@ def test_disjoint_specialization(db):
 def test_login_counters_and_password_hashes_never_reach_the_audit_log(db):
     d = db.donor()
     for _ in range(5):
-        db.q("SELECT login_attempt(%s, FALSE)", (d,))
+        db.q("CALL login_attempt(%s, FALSE)", (d,))
     db.q("UPDATE user_account SET password_hash = 'new-hash' WHERE user_id=%s", (d,))
     assert db.one("SELECT locked_until IS NOT NULL FROM user_account WHERE user_id=%s", (d,))
     assert db.one("SELECT count(*) FROM audit_log WHERE table_name='user_account' AND action='UPDATE'") == 0
