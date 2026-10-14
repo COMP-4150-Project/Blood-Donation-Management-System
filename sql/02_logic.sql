@@ -1,5 +1,14 @@
 SET search_path = vytal;
 
+-- ---------------------------------------------------------------- SE-04 who is really calling
+-- True when the role the client acts as is a superuser (setup, sample data, maintenance). It reads the SET ROLE setting, or
+-- the login role when none is set, not current_user: inside the SECURITY DEFINER procedures current_user is the owner
+-- role, while this stays the caller, and the application role cannot SET ROLE to a superuser.
+CREATE FUNCTION caller_is_superuser() RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT rolsuper FROM pg_roles
+    WHERE rolname = CASE WHEN current_setting('role') = 'none' THEN session_user::text ELSE current_setting('role') END
+$$;
+
 -- ---------------------------------------------------------------- subclass row must match role (EER disjoint)
 CREATE FUNCTION check_subclass_role() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -262,9 +271,11 @@ BEGIN
 END $$;
 
 -- FR-28 issue reserved units and close; unused units go back to Available
-CREATE PROCEDURE close_request(p_request int, p_cancel boolean DEFAULT FALSE, INOUT final_status text DEFAULT NULL)
+-- UC-21: p_units lists the reserved units actually issued; the rest go back to Available. NULL issues every reservation.
+CREATE PROCEDURE close_request(p_request int, p_cancel boolean DEFAULT FALSE, p_units text[] DEFAULT NULL,
+                               INOUT final_status text DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE issued int; req int; st text;
+DECLARE issued int; req int; st text; stray text;
 BEGIN
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF st IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
@@ -277,6 +288,16 @@ BEGIN
         UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired while reserved'
         WHERE status = 'Available' AND expires_at <= now()
           AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request);
+        IF p_units IS NOT NULL THEN
+            SELECT u INTO stray FROM unnest(p_units) u WHERE u NOT IN
+                (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL) LIMIT 1;
+            IF stray IS NOT NULL THEN RAISE EXCEPTION 'unit % is not reserved for request %', stray, p_request; END IF;
+            UPDATE blood_unit SET status = 'Available' WHERE unit_id IN
+                (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL)
+              AND unit_id <> ALL (p_units);
+            UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL
+              AND issued_at IS NULL AND unit_id <> ALL (p_units);
+        END IF;
         UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN
             (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL);
         UPDATE request_unit SET issued_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL;
@@ -367,6 +388,14 @@ RETURNS TABLE (donor_code varchar, blood_group varchar, next_eligible_date date)
     WHERE r.request_id = p_request AND e.status = 'Eligible' AND e.group_verified
 $$;
 
+-- UC-18 manual search: eligible, verified donors whose group can give this component to a recipient group (no request needed)
+CREATE FUNCTION donors_for_group(p_recipient text, p_component text DEFAULT 'RBC')
+RETURNS TABLE (donor_code varchar, blood_group varchar, next_eligible_date date) LANGUAGE sql STABLE AS $$
+    SELECT e.donor_code, e.blood_group, e.next_eligible_date
+    FROM compatibility c JOIN v_donor_eligibility e ON e.blood_group = c.donor_group
+    WHERE c.component_code = p_component AND c.recipient_group = p_recipient AND e.status = 'Eligible' AND e.group_verified
+$$;
+
 -- FR-30 lookback
 CREATE VIEW v_lookback AS
 SELECT dn.donor_id, dn.donation_id, dn.donated_at, u.unit_id, u.component_code, u.status,
@@ -389,8 +418,10 @@ BEGIN
                 VALUES (uid, TG_OP, TG_TABLE_NAME, rid, k, o ->> k, n ->> k);
             END IF;
         END LOOP;
-    ELSE
-        INSERT INTO audit_log (user_id, action, table_name, record_id) VALUES (uid, TG_OP, TG_TABLE_NAME, rid);
+    ELSE                                  -- FR-33: the whole row as created (INSERT) or as it was (DELETE)
+        INSERT INTO audit_log (user_id, action, table_name, record_id, old_value, new_value)
+        VALUES (uid, TG_OP, TG_TABLE_NAME, rid, (o - 'password_hash' - 'failed_logins' - 'locked_until')::text,
+                (n - 'password_hash' - 'failed_logins' - 'locked_until')::text);
     END IF;
     RETURN NULL;
 END $$;
@@ -455,7 +486,7 @@ CREATE TRIGGER donor_group_guard BEFORE UPDATE OF blood_group, verified_by, veri
 CREATE FUNCTION guard_verified_insert() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE actor int := nullif(current_setting('vytal.user_id', true), '')::int;
 BEGIN
-    IF NEW.verified_by IS NOT NULL AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+    IF NEW.verified_by IS NOT NULL AND NOT caller_is_superuser()
        AND NOT EXISTS (SELECT 1 FROM staff s JOIN user_account a USING (user_id)
                        WHERE s.user_id = actor AND a.is_active AND s.user_id = NEW.verified_by) THEN
         RAISE EXCEPTION 'only staff can verify a blood group, as themselves';

@@ -3,8 +3,10 @@
 Each function is one unit of work for one acting user. Business rules live in the database (DI-03); this layer adds
 what the database cannot know: who is calling, which facility they belong to (SE-02), and password checks (SE-01, SE-05).
 """
+import csv
 import datetime as dt
 import hashlib
+import io
 import json
 import re
 import secrets
@@ -15,6 +17,7 @@ from vytal.queries import load
 
 QUERIES = load()
 GROUPS = {"O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+"}
+COMPONENTS = {"RBC", "PLASMA", "PLT"}
 _DUMMY_HASH = hash_password("no-such-account")      # unknown emails cost the same bcrypt time as real ones (SE-05)
 
 
@@ -72,6 +75,9 @@ def register_donor(email, password, first, last, phone, dob, sex, weight_kg, add
     if dob >= dt.date.today():
         raise InvalidInput("date_of_birth: must be in the past")
     with session() as con:
+        min_age = con.execute("SELECT min_age_years FROM eligibility_rule WHERE sex = %s", (sex,)).fetchone()[0]
+        if _years_between(dob, dt.date.today()) < min_age:                # UC-01 2b; the procedure enforces it too
+            raise InvalidInput(f"date_of_birth: donors must be at least {min_age} years old")
         return con.execute("CALL register_donor(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                            (email, hash_password(password), first, last, phone, dob, sex, weight_kg, address,
                             blood_group)).fetchone()[0]
@@ -194,11 +200,33 @@ def confirm_request_group(staff_id, request_id, blood_group):
     return {"request_id": request_id, "reserved": reserved, "shortfall": shortfall}
 
 
-def close_request(staff_id, request_id, cancel=False):
-    """FR-28: issue the reserved units (or cancel and release them) for a request at the caller's facility."""
+def close_request(staff_id, request_id, cancel=False, issued_units=None):
+    """FR-28 / UC-21: issue the reserved units staff confirm (all of them if none are listed; the rest go back to
+    Available), or cancel and release them, for a request at the caller's facility."""
     with session(staff_id) as con:
         _own_request(con, staff_id, request_id)
-        return con.execute("CALL close_request(%s,%s)", (request_id, cancel)).fetchone()[0]
+        return con.execute("CALL close_request(%s,%s,%s)",
+                           (request_id, cancel, list(issued_units) if issued_units is not None else None)).fetchone()[0]
+
+
+def call_responses(staff_id, request_id):
+    """FR-27: donors' answers to the calls for a request; donor code only, never contact details (SE-07)."""
+    with session(staff_id) as con:
+        _own_request(con, staff_id, request_id)
+        return con.execute("SELECT o.donor_code, r.response, r.responded_at FROM donation_call c "
+                           "JOIN call_recipient r USING (call_id) JOIN donor o ON o.user_id = r.donor_id "
+                           "WHERE c.request_id = %s ORDER BY r.response, o.donor_code", (request_id,)).fetchall()
+
+
+def search_donors(staff_id, recipient_group, component="RBC"):
+    """UC-18 manual search by blood group: eligible, verified, compatible donors; code, group and eligibility only (SE-07)."""
+    if recipient_group not in GROUPS:
+        raise InvalidInput("blood_group: choose one of the eight groups")
+    if component not in COMPONENTS:
+        raise InvalidInput("component: choose RBC, PLASMA or PLT")
+    with session(staff_id) as con:
+        _role(con, staff_id, "Staff")
+        return con.execute("SELECT * FROM donors_for_group(%s,%s) ORDER BY donor_code", (recipient_group, component)).fetchall()
 
 
 def find_donors(staff_id, request_id):
@@ -221,6 +249,29 @@ def inventory(staff_id):
         fac = _role(con, staff_id, "Staff")
         return con.execute("SELECT blood_group, component_code, available, reserved, expiring_48h FROM v_inventory "
                            "WHERE facility_id = %s ORDER BY component_code, blood_group", (fac,)).fetchall()
+
+
+def open_alerts(staff_id):
+    """FR-21 / UC-13 step 3: open low-stock alerts at the caller's facility, with current stock against the minimum."""
+    with session(staff_id) as con:
+        fac = _role(con, staff_id, "Staff")
+        return con.execute("SELECT a.blood_group, a.component_code, coalesce(i.available, 0), t.min_units, a.opened_at "
+                           "FROM stock_alert a JOIN stock_threshold t USING (facility_id, blood_group, component_code) "
+                           "LEFT JOIN v_inventory i USING (facility_id, blood_group, component_code) "
+                           "WHERE a.facility_id = %s AND a.cleared_at IS NULL ORDER BY a.opened_at", (fac,)).fetchall()
+
+
+def list_notifications(user_id, unread_only=False):
+    """UC-09 / UC-20: the caller's own notifications, newest first."""
+    with session(user_id) as con:
+        return con.execute("SELECT notification_id, message, created_at, read_at FROM notification WHERE user_id = %s "
+                           "AND (NOT %s OR read_at IS NULL) ORDER BY created_at DESC, notification_id DESC",
+                           (user_id, unread_only)).fetchall()
+
+
+def mark_read(user_id, notification_id):
+    """Marks one of the caller's own notifications read (only the first time counts)."""
+    return _call(user_id, "CALL mark_notification_read(%s,%s)", user_id, notification_id)
 
 
 def record_deferral(staff_id, donor_id, reason, end=None):
@@ -268,6 +319,94 @@ def quarantine_donor(admin_id, donor_id):
         _role(con, admin_id, "Admin")
         con.execute("CALL quarantine_donor(%s)", (donor_id,))
         return con.execute(_LOOKBACK, (donor_id,)).fetchall()
+
+
+_LOOKBACK_ISSUED = ("SELECT l.unit_id, l.component_code, l.issued_at, f.name AS request_facility, l.request_id "
+                    "FROM v_lookback l LEFT JOIN facility f ON f.facility_id = l.request_facility "
+                    "WHERE l.donor_id = %s AND l.issued_at IS NOT NULL ORDER BY l.issued_at, l.unit_id")
+
+
+def lookback_issued_csv(admin_id, donor_code, path=None):
+    """UC-22 step 4: CSV of the donor's Issued units so hospitals can follow up with patients."""
+    with session(admin_id) as con:
+        _role(con, admin_id, "Admin")
+        row = con.execute("SELECT user_id FROM donor WHERE donor_code = %s", (donor_code,)).fetchone()
+        if not row:
+            raise InvalidInput("no donor with that code")
+        cur = con.execute(_LOOKBACK_ISSUED, row)
+        return _csv(cur, path)
+
+
+_AUDIT = ("SELECT audit_id, changed_at, user_id, action, table_name, record_id, field_name, old_value, new_value "
+          "FROM audit_log WHERE (%(user)s::int IS NULL OR user_id = %(user)s) "
+          "AND (%(table)s::text IS NULL OR table_name = %(table)s) AND (%(record)s::text IS NULL OR record_id = %(record)s) "
+          "AND (%(since)s::timestamptz IS NULL OR changed_at >= %(since)s) "
+          "AND (%(until)s::timestamptz IS NULL OR changed_at < %(until)s) ORDER BY changed_at, audit_id LIMIT %(limit)s")
+
+
+def audit_log(admin_id, user_id=None, table=None, record_id=None, since=None, until=None, limit=500):
+    """UC-25 step 2-3: who changed what and when, with old and new values, filtered by user, table, record or date."""
+    with session(admin_id) as con:
+        _role(con, admin_id, "Admin")
+        return con.execute(_AUDIT, {"user": user_id, "table": table, "record": record_id, "since": since, "until": until,
+                                    "limit": limit}).fetchall()
+
+
+def audit_csv(admin_id, path=None, **filters):
+    """UC-25 2a: the filtered audit log as CSV text (also written to path when given)."""
+    with session(admin_id) as con:
+        _role(con, admin_id, "Admin")
+        args = {"user": filters.get("user_id"), "table": filters.get("table"), "record": filters.get("record_id"),
+                "since": filters.get("since"), "until": filters.get("until"), "limit": filters.get("limit", 100000)}
+        return _csv(con.execute(_AUDIT, args), path)
+
+
+# FR-32 / UC-24 clinical rules (MA-01): the procedures check the Admin role, audit the change and refuse stranding edits
+def set_compatibility(admin_id, component, recipient_group, donor_group, allowed):
+    if component not in COMPONENTS or recipient_group not in GROUPS or donor_group not in GROUPS:
+        raise InvalidInput("choose a component and two of the eight blood groups")
+    return _call(admin_id, "CALL set_compatibility(%s,%s,%s,%s,%s)", admin_id, component, recipient_group, donor_group,
+                 bool(allowed))
+
+
+def set_shelf_life(admin_id, component, days):
+    if component not in COMPONENTS:
+        raise InvalidInput("component: choose RBC, PLASMA or PLT")
+    _check_days(days, "shelf_life_days")
+    return _call(admin_id, "CALL set_shelf_life(%s,%s,%s)", admin_id, component, days)
+
+
+def set_donation_interval(admin_id, donation_type, sex, days):
+    if sex not in ("M", "F"):
+        raise InvalidInput("sex: choose M or F")
+    _check_days(days, "interval_days")
+    return _call(admin_id, "CALL set_donation_interval(%s,%s,%s,%s)", admin_id, donation_type, sex, days)
+
+
+def save_deferral_reason(admin_id, code, description, permanent, default_days=None):
+    if not re.fullmatch(r"[A-Za-z]{2,10}", code or ""):
+        raise InvalidInput("reason_code: 2 to 10 letters")
+    if not (description or "").strip():
+        raise InvalidInput("description: required")
+    if permanent and default_days is not None:
+        raise InvalidInput("default_days: a permanent reason has no default length")
+    if not permanent:
+        _check_days(default_days, "default_days")
+    return _call(admin_id, "CALL save_deferral_reason(%s,%s,%s,%s,%s)", admin_id, code, description, bool(permanent),
+                 default_days)
+
+
+def set_eligibility_rule(admin_id, sex, min_age, min_weight_kg, min_hemoglobin_gl):
+    if sex not in ("M", "F"):
+        raise InvalidInput("sex: choose M or F")
+    if not (isinstance(min_age, int) and 16 <= min_age <= 25):
+        raise InvalidInput("min_age_years: enter a whole number from 16 to 25")
+    if not 30 <= float(min_weight_kg) <= 100:
+        raise InvalidInput("min_weight_kg: enter a weight from 30 to 100 kg")
+    if not 100 <= float(min_hemoglobin_gl) <= 180:
+        raise InvalidInput("min_hemoglobin_gl: enter a value from 100 to 180 g/L")
+    return _call(admin_id, "CALL set_eligibility_rule(%s,%s,%s,%s,%s)", admin_id, sex, min_age, min_weight_kg,
+                 min_hemoglobin_gl)
 
 
 def admin_overview(admin_id):
@@ -320,6 +459,27 @@ def nightly_expiry():
 
 
 # ---------------------------------------------------------------------- helpers
+def _years_between(born, on):
+    return on.year - born.year - ((on.month, on.day) < (born.month, born.day))
+
+
+def _check_days(days, field):
+    if not isinstance(days, int) or days <= 0:
+        raise InvalidInput(f"{field}: enter a whole number of days above 0")
+
+
+def _csv(cur, path=None):
+    buf = io.StringIO()
+    out = csv.writer(buf)
+    out.writerow([c.name for c in cur.description])
+    out.writerows(cur.fetchall())
+    text = buf.getvalue()
+    if path:
+        with open(path, "w", newline="") as f:
+            f.write(text)
+    return text
+
+
 def _call(user_id, sql, *args):
     """One stored procedure in one transaction for one acting user; the procedure checks the user's role itself.
     Returns its first INOUT value, or None for a procedure that hands nothing back."""

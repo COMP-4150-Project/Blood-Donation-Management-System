@@ -5,9 +5,10 @@ SET search_path = vytal;
 -- cannot be: trigger functions, read-only calculations used inside queries (donor_eligibility, eligible_donors), and
 -- small internal helpers used in expressions (require_role, require_session_user, recompute_next_eligible, refresh_alert).
 -- separate_donation returns its new unit ids as an array, so it is a procedure like the other commands.
+-- 06_security.sql makes every procedure SECURITY DEFINER (owner vytal_owner, search_path pinned): the application role
+-- cannot write any table itself, so procedures are the only way it changes data (SE-04).
 
 -- ---------------------------------------------------------------- FR-20 / UC-14 nightly expiry job
--- SECURITY DEFINER because it writes the job's audit row, which the application role cannot do directly.
 CREATE PROCEDURE run_nightly_expiry(INOUT expired int DEFAULT NULL) LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = vytal, pg_temp AS $$
 BEGIN
@@ -27,7 +28,7 @@ END $$;
 CREATE FUNCTION require_session_user(p_user int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     IF p_user IS DISTINCT FROM nullif(current_setting('vytal.user_id', true), '')::int
-       AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+       AND NOT caller_is_superuser() THEN
         RAISE EXCEPTION 'acting user does not match the session';
     END IF;
 END $$;
@@ -47,7 +48,10 @@ CREATE PROCEDURE register_donor(p_email text, p_password_hash text, p_first text
                                 p_dob date, p_sex char, p_weight numeric, p_address text, p_blood_group text,
                                 INOUT new_user_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
+DECLARE min_age int := (SELECT min_age_years FROM eligibility_rule WHERE sex = p_sex);
 BEGIN
+    IF age(CURRENT_DATE, p_dob) < make_interval(years => min_age) THEN          -- UC-01 2b / BR-01
+        RAISE EXCEPTION 'donor must be at least % years old to register', min_age; END IF;
     INSERT INTO user_account (email, password_hash, first_name, last_name, phone, role)
     VALUES (lower(p_email), p_password_hash, p_first, p_last, p_phone, 'Donor') RETURNING user_id INTO new_user_id;
     -- the self-reported group stays unverified (verified_by NULL) until staff confirm it (FR-09)
@@ -96,7 +100,7 @@ LANGUAGE plpgsql AS $$
 DECLARE sid int; missing int; actor int := nullif(current_setting('vytal.user_id', true), '')::int;
 BEGIN
     -- UC-04: the donor answers for themselves, or staff enter the answers at the clinic
-    IF actor IS DISTINCT FROM p_donor AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+    IF actor IS DISTINCT FROM p_donor AND NOT caller_is_superuser()
        AND NOT EXISTS (SELECT 1 FROM staff s JOIN user_account a USING (user_id) WHERE s.user_id = actor AND a.is_active) THEN
         RAISE EXCEPTION 'screening is entered by the donor or by staff';
     END IF;
@@ -185,6 +189,12 @@ LANGUAGE plpgsql AS $$
 DECLARE got int;
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
+    -- BR-10: Emergency is needed within 1 hour, Urgent within 24 hours, Routine is scheduled for any later time
+    IF p_required_by <= now() THEN RAISE EXCEPTION 'required-by time must be in the future'; END IF;
+    IF p_urgency = 'Emergency' AND p_required_by > now() + interval '1 hour' THEN
+        RAISE EXCEPTION 'an Emergency request is needed within 1 hour (BR-10)'; END IF;
+    IF p_urgency = 'Urgent' AND p_required_by > now() + interval '24 hours' THEN
+        RAISE EXCEPTION 'an Urgent request is needed within 24 hours (BR-10)'; END IF;
     INSERT INTO blood_request (requested_by, patient_ref, recipient_group, component_code, units_requested, urgency, required_by)
     VALUES (p_staff, p_patient_ref, p_group, p_component, p_units, p_urgency, p_required_by) RETURNING request_id INTO new_request;
     CALL allocate(new_request, got);
@@ -346,4 +356,60 @@ BEGIN
     PERFORM require_role(p_donor, 'Donor');
     UPDATE user_account SET phone = p_phone, email = lower(p_email) WHERE user_id = p_donor;
     UPDATE donor SET address = p_address, weight_kg = p_weight WHERE user_id = p_donor;
+END $$;
+
+-- ---------------------------------------------------------------- FR-32 / UC-24 an Admin maintains the clinical rules (MA-01)
+-- New values apply to future calculations; every change is audited (SE-08) and compat_coverage refuses a stranding edit (2a).
+CREATE PROCEDURE set_compatibility(p_admin int, p_component text, p_recipient text, p_donor text, p_allowed boolean)
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    IF p_allowed THEN
+        INSERT INTO compatibility (component_code, recipient_group, donor_group) VALUES (p_component, p_recipient, p_donor)
+        ON CONFLICT DO NOTHING;
+    ELSE
+        DELETE FROM compatibility WHERE component_code = p_component AND recipient_group = p_recipient AND donor_group = p_donor;
+    END IF;
+END $$;
+
+CREATE PROCEDURE set_shelf_life(p_admin int, p_component text, p_days int) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    UPDATE component_type SET shelf_life_days = p_days WHERE component_code = p_component;
+    IF NOT FOUND THEN RAISE EXCEPTION 'unknown component %', p_component; END IF;
+END $$;
+
+CREATE PROCEDURE set_donation_interval(p_admin int, p_type text, p_sex char, p_days int) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    INSERT INTO donation_interval (donation_type_code, sex, interval_days) VALUES (p_type, p_sex, p_days)
+    ON CONFLICT (donation_type_code, sex) DO UPDATE SET interval_days = EXCLUDED.interval_days;
+END $$;
+
+CREATE PROCEDURE save_deferral_reason(p_admin int, p_code text, p_description text, p_permanent boolean, p_default_days int)
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    INSERT INTO deferral_reason (reason_code, description, is_permanent, default_days)
+    VALUES (upper(p_code), p_description, p_permanent, p_default_days)
+    ON CONFLICT (reason_code) DO UPDATE
+        SET description = EXCLUDED.description, is_permanent = EXCLUDED.is_permanent, default_days = EXCLUDED.default_days;
+END $$;
+
+CREATE PROCEDURE set_eligibility_rule(p_admin int, p_sex char, p_min_age int, p_min_weight numeric, p_min_hemoglobin numeric)
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    UPDATE eligibility_rule SET min_age_years = p_min_age, min_weight_kg = p_min_weight, min_hemoglobin_gl = p_min_hemoglobin
+    WHERE sex = p_sex;
+    IF NOT FOUND THEN RAISE EXCEPTION 'no eligibility rule for sex %', p_sex; END IF;
+END $$;
+
+-- ---------------------------------------------------------------- UC-09 / UC-20 a user marks their own notification read, once
+CREATE PROCEDURE mark_notification_read(p_user int, p_notification int) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_session_user(p_user);
+    IF NOT EXISTS (SELECT 1 FROM notification WHERE notification_id = p_notification AND user_id = p_user) THEN
+        RAISE EXCEPTION 'notification % not found', p_notification; END IF;
+    UPDATE notification SET read_at = now() WHERE notification_id = p_notification AND read_at IS NULL;
 END $$;

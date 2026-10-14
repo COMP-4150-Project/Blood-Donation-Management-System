@@ -24,8 +24,8 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `sql/03_sessions.sql` | SE-06 sessions: hashed tokens and idle timeouts |
 | `sql/04_indexes.sql` | Performance indexes, each backed by `bench/index_ablation.md` |
 | `sql/05_reference_data.sql` | Blood groups, compatibility, shelf lives, donation intervals, deferral reasons |
-| `sql/06_security.sql` | Application and reporting roles (least privilege, with passwords) |
-| `sql/07_sample_data.sql` | Hand-written sample data for every table |
+| `sql/06_security.sql` | Owner, application and reporting roles: the app can only read and call procedures (least privilege, with passwords) |
+| `sql/07_sample_data.sql` | Hand-written sample data for every table: three hospitals and a blood centre, ten months of activity, and Step 2 Scenarios 1 to 5 as they stand today |
 | `sql/queries.sql` | The 13 key queries |
 | `demo.py` | Replays Step 2 Scenario 1 (emergency trauma request) through the backend |
 | `vytal/` | Python backend (password hashing, sessions, operations used by the GUI) |
@@ -108,6 +108,8 @@ foreach ($f in Get-ChildItem sql\0*.sql | Sort-Object Name) { psql -v ON_ERROR_S
 
 No output means it worked. To start over, run `dropdb vytal` and repeat this step.
 
+Least privilege (SE-04): every routine is owned by `vytal_owner`, a non-superuser role that cannot log in, and every procedure runs as that owner (`SECURITY DEFINER`, fixed `search_path`). The application login `vytal_app` can read tables and call procedures, but cannot insert, update or delete any table itself, so every change passes the procedures' role and session checks. The database trusts the acting user that the backend stamps into `vytal.user_id` after login; that is the trust boundary between the web tier and the database.
+
 Setup gives the two database roles, `vytal_app` (the application) and `vytal_report` (read-only reporting), development passwords. To choose your own, set them before running setup: `VYTAL_APP_PW=... VYTAL_REPORT_PW=... ./setup.sh` (PowerShell: add `-v app_pw=... -v report_pw=...` to the `psql` command).
 
 ---
@@ -140,6 +142,8 @@ Type `\q` to exit.
 
 Every sample account uses the password `Vytal-demo-2026` (stored as a salted bcrypt hash). For example: `admin@vytal.example.ca` (Admin), `m.ross@riverside.example.ca` (Staff, Emergency nurse) and `liam.tremblay@mail.ca` (Donor).
 
+The sample data follows the Step 2 scenarios at today's date: TR-2291 (request 23) holds the only 3 O- units with a shortfall of 1 and 14 O- donors called, two of whom accepted (Scenario 1); Priya (D-1072) is deferred for a recent tattoo (Scenario 2); Marcus's (D-1073) bag from yesterday went on the shelf this morning and cleared Lakeshore's O+ alert (Scenario 3); two of Riverside's four A+ platelet units expired and the minimum was lowered (Scenario 4); and D-1042's lookback quarantined 3 units and re-allocated request 31 (Scenario 5). `tests/test_sample_data.py` checks each scenario's numbers.
+
 ---
 
 ## Run the tests
@@ -150,7 +154,7 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **248 passed** (all tests run; nothing is skipped).
+Expected: **294 passed** (all tests run; nothing is skipped).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
 
@@ -164,7 +168,7 @@ Expected: **248 passed** (all tests run; nothing is skipped).
 python demo.py
 ```
 
-This builds a separate `vytal_demo` database and replays Scenario 1 from the Step 2 specification through the `vytal/` package: Maya's Emergency request TR-2291 for 4 red cell units with an unknown group reserves the only 3 O- units (shortfall 1), O- stock falls to 0 below its threshold of 6 and an alert opens, the donor search finds 14 eligible O- donors and Maya calls them all, the lab confirms A+ so the last unit comes from A+ stock, two donors accept, and the request is fulfilled. Each step checks the scenario's numbers and stops with an error if one differs. It uses the same superuser connection as `setup.sh` and never touches your `vytal` database.
+This builds a separate `vytal_demo` database and replays Scenario 1 from the Step 2 specification through the `vytal/` package: Maya's Emergency request TR-2291 for 4 red cell units with an unknown group reserves the only 3 O- units (shortfall 1), O- stock is left at 0, below its threshold of 6, with the low-stock alert open for all staff, the donor search finds 14 eligible O- donors and Maya calls them all, the lab confirms A+ so the last unit comes from A+ stock, two donors accept, and the request is fulfilled. Each step checks the scenario's numbers and stops with an error if one differs. It uses the same superuser connection as `setup.sh` and never touches your `vytal` database.
 
 ---
 
