@@ -79,21 +79,19 @@ BEGIN
     IF NEW.expires_at <= collected THEN RAISE EXCEPTION 'expiry must be after collection'; END IF;
     RETURN NEW;
 END $$;
-ALTER TABLE donation ALTER COLUMN blood_group DROP NOT NULL;   -- filled by trigger from the verified group
-ALTER TABLE donation ADD CONSTRAINT donation_group_set CHECK (blood_group IS NOT NULL);
-ALTER TABLE blood_unit ALTER COLUMN expires_at DROP NOT NULL;   -- filled by trigger, re-checked below
+-- NOT NULL on donation.blood_group and blood_unit.expires_at holds as designed: PostgreSQL checks it after BEFORE triggers run
 CREATE TRIGGER unit_expiry BEFORE INSERT ON blood_unit FOR EACH ROW EXECUTE FUNCTION set_unit_expiry();
-ALTER TABLE blood_unit ADD CONSTRAINT unit_expiry_set CHECK (expires_at IS NOT NULL);
 
 -- ---------------------------------------------------------------- FR-13 / FR-14 valid status changes
 CREATE FUNCTION check_unit_status() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE ok boolean; bad_or_missing int;
 BEGIN
     IF NEW.status = OLD.status THEN RETURN NEW; END IF;
+    -- exactly the lifecycle in Step 2 Table 1 (BR-12); every other change is refused
     ok := (OLD.status, NEW.status) IN (
-        ('Collected','Available'), ('Collected','Discarded'), ('Collected','Quarantined'),
+        ('Collected','Available'), ('Collected','Discarded'), ('Collected','Expired'),
         ('Available','Reserved'), ('Available','Discarded'), ('Available','Expired'), ('Available','Quarantined'),
-        ('Reserved','Available'), ('Reserved','Issued'), ('Reserved','Expired'), ('Reserved','Quarantined'),
+        ('Reserved','Available'), ('Reserved','Issued'), ('Reserved','Quarantined'),
         ('Quarantined','Discarded'), ('Quarantined','Available'));
     IF NOT ok THEN RAISE EXCEPTION 'invalid unit status change % -> %', OLD.status, NEW.status; END IF;
     NEW.status_changed_at := now();
@@ -197,14 +195,29 @@ BEGIN
         WHERE facility_id = p_fac AND blood_group = p_group AND component_code = p_comp AND cleared_at IS NULL;
     END IF;
 END $$;
+-- statement level (PR-05): one stock check per facility/group/component a statement touched, not one per unit.
+-- No join between the transition tables: they have no statistics, so the planner nested-loops them. refresh_alert is
+-- idempotent, so checking every key in either table gives the same alerts as checking only changed rows.
 CREATE FUNCTION trg_unit_alert() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE g text;
 BEGIN
-    SELECT blood_group INTO g FROM v_blood_unit WHERE unit_id = NEW.unit_id;
-    PERFORM refresh_alert(NEW.facility_id, g, NEW.component_code);
+    IF TG_OP = 'INSERT' THEN
+        PERFORM refresh_alert(k.facility_id, k.blood_group, k.component_code)
+        FROM (SELECT DISTINCT n.facility_id, d.blood_group, n.component_code
+              FROM (SELECT DISTINCT facility_id, donation_id, component_code FROM new_units) n
+              JOIN donation d USING (donation_id)) k;
+    ELSE
+        PERFORM refresh_alert(k.facility_id, k.blood_group, k.component_code)
+        FROM (SELECT DISTINCT u.facility_id, d.blood_group, u.component_code
+              FROM (SELECT facility_id, donation_id, component_code FROM new_units
+                    UNION SELECT facility_id, donation_id, component_code FROM old_units) u
+              JOIN donation d USING (donation_id)) k;
+    END IF;
     RETURN NULL;
 END $$;
-CREATE TRIGGER unit_alert AFTER INSERT OR UPDATE OF status ON blood_unit FOR EACH ROW EXECUTE FUNCTION trg_unit_alert();
+CREATE TRIGGER unit_alert_insert AFTER INSERT ON blood_unit REFERENCING NEW TABLE AS new_units
+    FOR EACH STATEMENT EXECUTE FUNCTION trg_unit_alert();
+CREATE TRIGGER unit_alert_update AFTER UPDATE ON blood_unit REFERENCING OLD TABLE AS old_units NEW TABLE AS new_units
+    FOR EACH STATEMENT EXECUTE FUNCTION trg_unit_alert();
 
 -- FR-18 / FR-19: changing a minimum re-checks stock straight away, not at the next unit movement
 CREATE FUNCTION trg_threshold_alert() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -255,12 +268,14 @@ BEGIN
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF st IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
     IF NOT p_cancel THEN
-        -- a reservation that expired before issue is released and its unit expires (counted as wastage)
-        UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired while reserved'
-        WHERE status = 'Reserved' AND expires_at <= now()
-          AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL);
+        -- a reservation that expired before issue is released (Reserved -> Available) and the unit expires (Available -> Expired)
         UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL
-          AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Expired');
+          AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
+        UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now()
+          AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request);
+        UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired while reserved'
+        WHERE status = 'Available' AND expires_at <= now()
+          AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request);
         UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN
             (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL);
         UPDATE request_unit SET issued_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL;
@@ -279,25 +294,36 @@ END $$;
 CREATE FUNCTION expire_units() RETURNS int LANGUAGE plpgsql SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
 DECLARE n int;
 BEGIN
+    -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
     UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
       AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
+    UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now();
     UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
-    WHERE status IN ('Available','Reserved') AND expires_at <= now();
+    WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
     GET DIAGNOSTICS n = ROW_COUNT;
     INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'expire_units', n::text);
     RETURN n;
 END $$;
 
--- FR-31 quarantine every Available / Reserved unit from a donor
+-- FR-31 quarantine every Available / Reserved unit from a donor; UC-22 3a open requests that lose a unit are re-allocated
 CREATE FUNCTION quarantine_donor(p_donor int) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE n int;
+DECLARE n int; r int; affected int[];
 BEGIN
+    -- lock the donor's shelf units first: a concurrent allocate() either finishes (and its reservation is seen below)
+    -- or skips them (SKIP LOCKED), so no reservation can survive on a Quarantined unit
+    PERFORM 1 FROM blood_unit b JOIN donation d USING (donation_id)
+    WHERE d.donor_id = p_donor AND b.status IN ('Available','Reserved') ORDER BY b.unit_id FOR UPDATE OF b;
+    SELECT array_agg(DISTINCT ru.request_id) INTO affected
+    FROM request_unit ru JOIN v_blood_unit u ON u.unit_id = ru.unit_id JOIN blood_request br ON br.request_id = ru.request_id
+    WHERE u.donor_id = p_donor AND u.status = 'Reserved' AND ru.released_at IS NULL AND ru.issued_at IS NULL
+      AND br.status = 'Open';
     UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
       AND unit_id IN (SELECT unit_id FROM v_blood_unit WHERE donor_id = p_donor AND status = 'Reserved');
     UPDATE blood_unit SET status = 'Quarantined', status_reason = 'Lookback'
     WHERE status IN ('Available','Reserved') AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor);
     GET DIAGNOSTICS n = ROW_COUNT;
     UPDATE donor SET is_flagged = TRUE WHERE user_id = p_donor;
+    FOREACH r IN ARRAY coalesce(affected, '{}') LOOP PERFORM allocate(r); END LOOP;
     RETURN n;
 END $$;
 
@@ -328,7 +354,7 @@ $$;
 -- FR-30 lookback
 CREATE VIEW v_lookback AS
 SELECT dn.donor_id, dn.donation_id, dn.donated_at, u.unit_id, u.component_code, u.status,
-       ru.request_id, vr.facility_id AS request_facility, ru.issued_at
+       ru.request_id, vr.facility_id AS request_facility, ru.issued_at, u.facility_id AS held_at
 FROM donation dn JOIN blood_unit u USING (donation_id)
 LEFT JOIN request_unit ru ON ru.unit_id = u.unit_id AND ru.released_at IS NULL LEFT JOIN v_request vr ON vr.request_id = ru.request_id;
 
@@ -341,7 +367,8 @@ DECLARE o jsonb := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
 BEGIN
     IF TG_OP = 'UPDATE' THEN
         FOR k IN SELECT jsonb_object_keys(n) LOOP
-            IF n -> k IS DISTINCT FROM o -> k THEN
+            -- secrets and login counters are never copied into the log
+            IF n -> k IS DISTINCT FROM o -> k AND k NOT IN ('password_hash', 'failed_logins', 'locked_until') THEN
                 INSERT INTO audit_log (user_id, action, table_name, record_id, field_name, old_value, new_value)
                 VALUES (uid, TG_OP, TG_TABLE_NAME, rid, k, o ->> k, n ->> k);
             END IF;
@@ -356,3 +383,67 @@ CREATE TRIGGER audit_deferral AFTER INSERT OR UPDATE OR DELETE ON deferral FOR E
 CREATE TRIGGER audit_unit AFTER INSERT OR UPDATE OR DELETE ON blood_unit FOR EACH ROW EXECUTE FUNCTION audit_row('unit_id');
 CREATE TRIGGER audit_request AFTER INSERT OR UPDATE OR DELETE ON blood_request FOR EACH ROW EXECUTE FUNCTION audit_row('request_id');
 CREATE TRIGGER audit_compat AFTER INSERT OR UPDATE OR DELETE ON compatibility FOR EACH ROW EXECUTE FUNCTION audit_row('component_code', 'recipient_group', 'donor_group');
+-- SE-08: every clinical rule table an Admin can change (FR-32) is audited too
+CREATE TRIGGER audit_component AFTER INSERT OR UPDATE OR DELETE ON component_type FOR EACH ROW EXECUTE FUNCTION audit_row('component_code');
+CREATE TRIGGER audit_interval AFTER INSERT OR UPDATE OR DELETE ON donation_interval FOR EACH ROW EXECUTE FUNCTION audit_row('donation_type_code', 'sex');
+CREATE TRIGGER audit_rule AFTER INSERT OR UPDATE OR DELETE ON eligibility_rule FOR EACH ROW EXECUTE FUNCTION audit_row('sex');
+CREATE TRIGGER audit_reason AFTER INSERT OR UPDATE OR DELETE ON deferral_reason FOR EACH ROW EXECUTE FUNCTION audit_row('reason_code');
+-- UC-03 / UC-23 / FR-33: accounts, facilities, thresholds and donations
+CREATE TRIGGER audit_user AFTER INSERT OR UPDATE OR DELETE ON user_account FOR EACH ROW EXECUTE FUNCTION audit_row('user_id');
+CREATE TRIGGER audit_facility AFTER INSERT OR UPDATE OR DELETE ON facility FOR EACH ROW EXECUTE FUNCTION audit_row('facility_id');
+CREATE TRIGGER audit_threshold AFTER INSERT OR UPDATE OR DELETE ON stock_threshold FOR EACH ROW EXECUTE FUNCTION audit_row('facility_id', 'blood_group', 'component_code');
+CREATE TRIGGER audit_donation AFTER INSERT OR UPDATE OR DELETE ON donation FOR EACH ROW EXECUTE FUNCTION audit_row('donation_id');
+
+-- ---------------------------------------------------------------- UC-24 2a every recipient group keeps a compatible donor group
+-- Checked per statement for the components the statement touched (a new component with no rules yet does not block
+-- other edits), so edit a rule with UPDATE (or insert the new pair before deleting the old one).
+CREATE FUNCTION check_compat_coverage() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE comp text; grp text;
+BEGIN
+    SELECT c.component_code, g.blood_group INTO comp, grp
+    FROM (SELECT DISTINCT component_code FROM old_rows) c CROSS JOIN blood_group g
+    WHERE NOT EXISTS (SELECT 1 FROM compatibility x WHERE x.component_code = c.component_code AND x.recipient_group = g.blood_group)
+    ORDER BY 1, 2 LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'change would leave % recipients with no compatible donor group for %', grp, comp;
+    END IF;
+    RETURN NULL;
+END $$;
+-- a trigger with transition tables can serve one event only, hence two
+CREATE TRIGGER compat_coverage_update AFTER UPDATE ON compatibility REFERENCING OLD TABLE AS old_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION check_compat_coverage();
+CREATE TRIGGER compat_coverage_delete AFTER DELETE ON compatibility REFERENCING OLD TABLE AS old_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION check_compat_coverage();
+
+-- ---------------------------------------------------------------- FR-03 / UC-03 2a only active staff change a verified blood group
+-- Covers the verification fields too, so clearing verified_by first cannot open the group to edits.
+CREATE FUNCTION guard_verified_group() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE actor int := nullif(current_setting('vytal.user_id', true), '')::int;
+        is_staff boolean := EXISTS (SELECT 1 FROM staff s JOIN user_account a USING (user_id) WHERE s.user_id = actor AND a.is_active);
+BEGIN
+    IF OLD.verified_by IS NOT NULL AND NOT is_staff
+       AND (NEW.blood_group, NEW.verified_by, NEW.verified_at) IS DISTINCT FROM (OLD.blood_group, OLD.verified_by, OLD.verified_at) THEN
+        RAISE EXCEPTION 'only staff can change a verified blood group';
+    END IF;
+    -- FR-09: verifying is a staff action, recorded under the staff member who did it
+    IF NEW.verified_by IS DISTINCT FROM OLD.verified_by AND NEW.verified_by IS NOT NULL
+       AND (NOT is_staff OR NEW.verified_by <> actor) THEN
+        RAISE EXCEPTION 'only staff can verify a blood group, as themselves';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER donor_group_guard BEFORE UPDATE OF blood_group, verified_by, verified_at ON donor
+    FOR EACH ROW EXECUTE FUNCTION guard_verified_group();
+
+-- FR-09 at registration: a new donor starts unverified unless staff (or a superuser loading data) record the verification
+CREATE FUNCTION guard_verified_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE actor int := nullif(current_setting('vytal.user_id', true), '')::int;
+BEGIN
+    IF NEW.verified_by IS NOT NULL AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+       AND NOT EXISTS (SELECT 1 FROM staff s JOIN user_account a USING (user_id)
+                       WHERE s.user_id = actor AND a.is_active AND s.user_id = NEW.verified_by) THEN
+        RAISE EXCEPTION 'only staff can verify a blood group, as themselves';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER donor_verified_insert BEFORE INSERT ON donor FOR EACH ROW EXECUTE FUNCTION guard_verified_insert();

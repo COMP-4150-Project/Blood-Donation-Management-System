@@ -54,6 +54,7 @@ def test_donation_needs_a_screening_in_the_last_24_hours(db):
 def test_donation_keeps_the_group_measured_at_the_time(db):
     d = db.donor("O+")
     dn = db.donate(d)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))        # staff correct a verified group (FR-03)
     db.q("UPDATE donor SET blood_group='A+' WHERE user_id=%s", (d,))
     assert db.one("SELECT blood_group FROM donation WHERE donation_id=%s", (dn,)) == "O+"
 
@@ -90,6 +91,12 @@ def test_expiry_before_collection_rejected(db):
                                           "VALUES ('E',%s,'RBC','2000-01-01')", (dn,))
 
 
+def test_collected_unit_cannot_be_quarantined(db):
+    """BR-12: lookback quarantine applies to Available and Reserved units only (Table 1)."""
+    unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (db.donate(db.donor()),))
+    assert "invalid unit status" in db.fails("UPDATE blood_unit SET status='Quarantined' WHERE unit_id=%s", (unit,))
+
+
 def test_release_needs_every_test_negative(db):
     dn = db.donate(db.donor())
     unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))
@@ -103,6 +110,7 @@ def test_release_needs_every_test_negative(db):
     (["Expired"], "Available"),
     (["Discarded"], "Available"),
     (["Reserved", "Issued"], "Available"),
+    (["Reserved"], "Expired"),                   # not in Table 1 (BR-12): a reservation is released first
 ])
 def test_invalid_status_changes(db, path, bad):
     unit = db.stock("O+")[0]
@@ -156,6 +164,20 @@ def test_changing_a_minimum_rechecks_stock_at_once(db):
     assert open_alerts(db, "A+") == 1
 
 
+def test_one_statement_opens_and_clears_alerts_for_different_groups(db):
+    """The statement-level alert check sees every group a multi-row UPDATE touched (PR-05 bulk path)."""
+    (falling,) = db.stock("O+")
+    dn = db.donate(db.donor("A+"))
+    (rising,) = [u for (u,) in db.q("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))]
+    for t in ("HIV", "HBV", "HCV", "SYPH"):
+        db.q("INSERT INTO test_result (donation_id, test_code, result) VALUES (%s,%s,'Negative')", (dn, t))
+    db.q("INSERT INTO stock_threshold VALUES (%s,'O+','RBC',1), (%s,'A+','RBC',1)", (db.fac_h, db.fac_h))
+    assert (open_alerts(db, "O+"), open_alerts(db, "A+")) == (0, 1)
+    db.q("UPDATE blood_unit SET status = CASE WHEN unit_id = %s THEN 'Discarded' ELSE 'Available' END WHERE unit_id IN (%s,%s)",
+         (falling, falling, rising))
+    assert (open_alerts(db, "O+"), open_alerts(db, "A+")) == (1, 0)
+
+
 # ---------------------------------------------------------------------- FR-33 / EER
 def test_audit_log_records_who_field_old_new(db):
     d = db.donor(kg=70)
@@ -163,6 +185,18 @@ def test_audit_log_records_who_field_old_new(db):
     db.q("UPDATE donor SET weight_kg = 72 WHERE user_id=%s", (d,))
     assert db.q("SELECT user_id, old_value, new_value FROM audit_log WHERE table_name='donor' AND record_id=%s "
                 "AND field_name='weight_kg'", (str(d),)) == [(db.nurse, "70.0", "72.0")]
+
+
+@pytest.mark.parametrize("sql, table", [
+    ("UPDATE eligibility_rule SET min_hemoglobin_gl = 126 WHERE sex = 'F'", "eligibility_rule"),
+    ("UPDATE component_type SET shelf_life_days = 7 WHERE component_code = 'PLT'", "component_type"),
+    ("UPDATE donation_interval SET interval_days = 90 WHERE donation_type_code = 'WB' AND sex = 'F'", "donation_interval"),
+    ("UPDATE deferral_reason SET default_days = 120 WHERE reason_code = 'TATTOO'", "deferral_reason"),
+])
+def test_clinical_rule_changes_are_audited(db, sql, table):
+    """SE-08 / FR-32: an Admin's change to any rule table leaves an audit row."""
+    db.q(sql)
+    assert db.one("SELECT count(*) FROM audit_log WHERE table_name=%s AND action='UPDATE'", (table,)) == 1
 
 
 def test_temp_table_cannot_shadow_the_audit_log(db):
@@ -179,3 +213,107 @@ def test_temp_table_cannot_shadow_the_audit_log(db):
 def test_disjoint_specialization(db):
     assert "role" in db.fails("INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg) VALUES (%s,'X','1990-01-01','M',70)", (db.nurse,))
     assert "role" in db.fails("INSERT INTO admin VALUES (%s)", (db.nurse,))
+
+
+# ---------------------------------------------------------------------- FR-33 accounts, facilities, thresholds, donations
+def test_login_counters_and_password_hashes_never_reach_the_audit_log(db):
+    d = db.donor()
+    for _ in range(5):
+        db.q("SELECT login_attempt(%s, FALSE)", (d,))
+    db.q("UPDATE user_account SET password_hash = 'new-hash' WHERE user_id=%s", (d,))
+    assert db.one("SELECT locked_until IS NOT NULL FROM user_account WHERE user_id=%s", (d,))
+    assert db.one("SELECT count(*) FROM audit_log WHERE table_name='user_account' AND action='UPDATE'") == 0
+    db.q("UPDATE user_account SET phone = '519-555-0102' WHERE user_id=%s", (d,))
+    assert db.q("SELECT field_name, new_value FROM audit_log WHERE table_name='user_account' AND action='UPDATE'") == \
+        [("phone", "519-555-0102")]
+
+
+def test_facility_threshold_and_donation_changes_are_audited(db):
+    db.q("INSERT INTO stock_threshold (facility_id, blood_group, component_code, min_units) VALUES (%s,'O-','RBC',3)", (db.fac_h,))
+    db.q("UPDATE facility SET phone = '519-555-0103' WHERE facility_id=%s", (db.fac_b,))
+    dn = db.donate(db.donor())
+    assert {(t, a, r) for t, a, r in db.q("SELECT table_name, action, record_id FROM audit_log "
+                                          "WHERE table_name IN ('facility','stock_threshold','donation')")} >= {
+        ("stock_threshold", "INSERT", f"{db.fac_h}/O-/RBC"), ("facility", "UPDATE", str(db.fac_b)), ("donation", "INSERT", str(dn))}
+
+
+# ---------------------------------------------------------------------- UC-24 2a compatibility coverage
+def test_compatibility_edit_that_keeps_coverage_is_accepted(db):
+    db.q("DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='AB+' AND donor_group='A+'")
+    db.q("UPDATE compatibility SET donor_group='A+' WHERE component_code='RBC' AND recipient_group='AB+' AND donor_group='B+'")
+    assert db.one("SELECT count(*) FROM compatibility WHERE component_code='RBC' AND recipient_group='AB+'") == 7
+
+
+@pytest.mark.parametrize("prep, sql", [
+    ("", "DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='O-'"),
+    ("", "DELETE FROM compatibility WHERE component_code='PLT'"),
+    # moves O-'s only pair to O+ (the O+ <- O- pair is removed first so only the coverage rule can refuse it)
+    ("DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='O+' AND donor_group='O-'",
+     "UPDATE compatibility SET recipient_group='O+' WHERE component_code='RBC' AND recipient_group='O-'"),
+])
+def test_compatibility_edit_that_strands_a_group_is_blocked(db, prep, sql):
+    if prep:
+        db.q(prep)
+    assert "no compatible donor group" in db.fails(sql)
+
+
+# ---------------------------------------------------------------------- FR-03 / UC-03 2a verified blood group
+def test_only_staff_change_a_verified_blood_group(db):
+    d = db.donor("O+")
+    assert "only staff" in db.fails("UPDATE donor SET blood_group='A+' WHERE user_id=%s", (d,))      # no acting user
+    for who in (d, db.admin):
+        db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
+        assert "only staff" in db.fails("UPDATE donor SET blood_group='A+' WHERE user_id=%s", (d,))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    db.q("UPDATE donor SET blood_group='A+' WHERE user_id=%s", (d,))
+    assert db.one("SELECT blood_group FROM donor WHERE user_id=%s", (d,)) == "A+"
+
+
+def test_donor_may_change_an_unverified_group(db):
+    d = db.donor("O+", verified=False)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    db.q("UPDATE donor SET blood_group='B+' WHERE user_id=%s", (d,))
+    assert db.one("SELECT blood_group FROM donor WHERE user_id=%s", (d,)) == "B+"
+
+
+def test_verification_cannot_be_cleared_or_rewritten_by_non_staff(db):
+    """FR-03: clearing verified_by first must not open the group to a donor's edit."""
+    d = db.donor("O+")
+    for who in (d, db.admin):
+        db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
+        assert "only staff" in db.fails("UPDATE donor SET verified_by=NULL, verified_at=NULL WHERE user_id=%s", (d,))
+        assert "only staff" in db.fails("UPDATE donor SET verified_at=now() - interval '1 day' WHERE user_id=%s", (d,))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.phleb),))
+    db.q("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (db.phleb, d))      # active staff may re-verify
+    assert db.one("SELECT verified_by FROM donor WHERE user_id=%s", (d,)) == db.phleb
+
+
+def test_only_staff_verify_a_group_and_only_as_themselves(db):
+    """FR-09: a donor or Admin cannot mark a group verified, and staff cannot record someone else as the verifier."""
+    d = db.donor("A+", verified=False)
+    for who in (d, db.admin):
+        db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
+        assert "only staff can verify" in db.fails("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (db.nurse, d))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert "only staff can verify" in db.fails("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (db.phleb, d))
+    db.q("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (db.nurse, d))
+    assert db.one("SELECT verified_by FROM donor WHERE user_id=%s", (d,)) == db.nurse
+
+
+def test_inactive_staff_cannot_change_a_verified_group(db):
+    d = db.donor("O+")
+    db.q("UPDATE user_account SET is_active=FALSE WHERE user_id=%s", (db.nurse,))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert "only staff" in db.fails("UPDATE donor SET blood_group='A+' WHERE user_id=%s", (d,))
+
+
+def test_coverage_check_ignores_components_the_edit_did_not_touch(db):
+    """UC-24: a new component without rules yet must not block an unrelated red-cell edit."""
+    db.q("INSERT INTO component_type (component_code, name, shelf_life_days) VALUES ('CRYO','Cryoprecipitate',365)")
+    db.q("DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='AB+' AND donor_group='A+'")
+    assert db.one("SELECT count(*) FROM compatibility WHERE component_code='RBC' AND recipient_group='AB+'") == 7
+
+
+def test_coverage_error_names_the_stranded_group_and_component(db):
+    msg = db.fails("DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='O-'")
+    assert "o- recipients" in msg and "for rbc" in msg

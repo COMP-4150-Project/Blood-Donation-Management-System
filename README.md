@@ -1,4 +1,4 @@
-# Vytal: Blood Donor and Request Management System
+# Vytal: Donor Eligibility and Blood Request Management System
 
 COMP-4150 group project (University of Windsor). Vytal is a database-driven platform that connects blood donors, hospitals and blood inventory: donor registration and eligibility, blood type compatibility, hospital requests matched to eligible donors and stock, and low-stock alerts.
 
@@ -6,7 +6,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 
 | Team member | Role |
 |---|---|
-| Jainam Sheth | Systems Analyst |
+| Jainam Jaykumar Sheth | Systems Analyst |
 | Mohammad Imaad | Data Modeling Specialist |
 | Aakanksha Mandal | Backend Engineer |
 | Shruti Dadhania | UX & Integration Specialist |
@@ -20,15 +20,17 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `setup.sh` | Builds the database from scratch (`./setup.sh`, or `./setup.sh --no-data` for an empty schema) |
 | `sql/01_schema.sql` | Tables, keys and constraints (generated from the Step 3 design) |
 | `sql/02_logic.sql` | Triggers, views and core procedures (eligibility, unit lifecycle, alerts, allocation, lookback, audit) |
-| `sql/03_procedures.sql` | Registration, screening, testing, donation calls, login lockout |
+| `sql/03_procedures.sql` | Use-case routines: registration, screening, deferrals, donations, testing, discards, thresholds, donation calls, account and facility management, login lockout, the nightly expiry procedure |
 | `sql/04_indexes.sql` | Performance indexes |
 | `sql/05_reference_data.sql` | Blood groups, compatibility, shelf lives, donation intervals, deferral reasons |
-| `sql/06_security.sql` | Application and reporting roles (least privilege) |
+| `sql/06_security.sql` | Application and reporting roles (least privilege, with passwords) |
 | `sql/07_sample_data.sql` | Hand-written sample data for every table |
 | `sql/queries.sql` | The 13 key queries |
+| `demo.py` | Replays Step 2 Scenario 1 (emergency trauma request) through the backend |
 | `vytal/` | Python backend (password hashing, sessions, operations used by the GUI) |
 | `tests/` | pytest suite (unit, integration, concurrency, security, data integrity) |
 | `bench/` | Performance benchmark and its bulk-data generator |
+| `ops/` | Runnable nightly expiry and backup scripts, with a crontab example |
 | `report/` | Script that builds the Step 4 report |
 
 ---
@@ -56,7 +58,8 @@ On Windows, if `psql` is not found, add `C:\Program Files\PostgreSQL\16\bin` to 
 ### 2. Install Python 3.10+ and the libraries
 
 ```bash
-cd code
+git clone -b step4 https://github.com/COMP-4150-Project/Blood-Donation-Management-System.git
+cd Blood-Donation-Management-System
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -105,6 +108,8 @@ foreach ($f in Get-ChildItem sql\0*.sql | Sort-Object Name) { psql -v ON_ERROR_S
 
 No output means it worked. To start over, run `dropdb vytal` and repeat this step.
 
+Setup gives the two database roles, `vytal_app` (the application) and `vytal_report` (read-only reporting), development passwords. To choose your own, set them before running setup: `VYTAL_APP_PW=... VYTAL_REPORT_PW=... ./setup.sh` (PowerShell: add `-v app_pw=... -v report_pw=...` to the `psql` command).
+
 ---
 
 ## Explore the data
@@ -125,39 +130,76 @@ SELECT * FROM v_request_status;                -- reserved units and shortfall p
 The database enforces the rules itself. Try breaking one:
 
 ```sql
-UPDATE donor SET blood_group = 'C+' WHERE user_id = 101;   -- refused: unknown blood group
+UPDATE donor SET blood_group = 'C+' WHERE user_id = 101;   -- refused: only staff can change a verified blood group (FR-03)
+UPDATE blood_unit SET status = 'Issued' WHERE status = 'Available';  -- refused: Available -> Issued skips Reserved (Table 1)
 DELETE FROM facility WHERE facility_id = 1;                -- refused: facility is still referenced
+DELETE FROM compatibility WHERE recipient_group = 'O-' AND component_code = 'RBC';  -- refused: O- patients would have no donor group
 ```
 
 Type `\q` to exit.
 
-Every sample account uses the password `Vytal-demo-2026` (stored as a salted scrypt hash). For example: `admin@vytal.example.ca` (Admin), `m.lopez@riverside.example.ca` (Staff) and `liam.tremblay@mail.ca` (Donor).
+Every sample account uses the password `Vytal-demo-2026` (stored as a salted bcrypt hash). For example: `admin@vytal.example.ca` (Admin), `m.ross@riverside.example.ca` (Staff, Emergency nurse) and `liam.tremblay@mail.ca` (Donor).
 
 ---
 
 ## Run the tests
 
-From the `code` folder, with the virtual environment active and the variables from step 3 set:
+From the project folder, with the virtual environment active and the variables from step 3 set:
 
 ```bash
 pytest -q
 ```
 
-Expected: **135 passed** (a few may show as skipped).
+Expected: **213 passed, 3 skipped** (216 tests in total).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
-- `tests/test_schema.py` compares the schema with the Step 3 design sources, which are not in this repository, so those checks are **skipped**. This is expected.
+- The 3 skipped tests in `tests/test_schema.py` compare the schema with the Step 3 design sources, which are not in this repository. This is expected.
+
+---
+
+## Run the demo
+
+```bash
+python demo.py
+```
+
+This builds a separate `vytal_demo` database and replays Scenario 1 from the Step 2 specification through the `vytal/` package: login, an Emergency request with an unknown group, a shortfall and low-stock alert, a donor search and call, then the lab confirming A+ and the last unit being reserved. It uses the same superuser connection as `setup.sh` and never touches your `vytal` database.
+
+---
+
+## Stored procedures, nightly job and backups
+
+Scheduled jobs are stored procedures (`CREATE PROCEDURE`, run with `CALL`). Operations that return a value to the caller are functions (`CREATE FUNCTION`, run with `SELECT`), for example `allocate()` returns the number of units it reserved.
+
+`run_nightly_expiry()` is the nightly expiry job (FR-20): `CALL vytal.run_nightly_expiry();` expires every unit past its date and returns how many. The `ops/` folder makes the scheduled jobs runnable:
+
+| Script | What it does |
+|---|---|
+| `ops/nightly_expiry.sh` | Calls `run_nightly_expiry()` once and logs how many units expired |
+| `ops/backup.sh [dir]` | Daily `pg_dump` (DI-05), then restores it into a scratch database and checks the row counts match |
+| `ops/crontab.example` | Cron entries for both jobs; edit the paths and install with `crontab -e` |
+
+```bash
+PGDATABASE=vytal ./ops/nightly_expiry.sh
+PGDATABASE=vytal ./ops/backup.sh backups
+```
+
+If the `pg_cron` extension is installed, the expiry job can be scheduled inside the database instead:
+
+```sql
+SELECT cron.schedule('vytal-expiry', '5 0 * * *', 'CALL vytal.run_nightly_expiry()');
+```
 
 ---
 
 ## Benchmark (optional)
 
-Measures query and procedure times with and without the indexes on a large generated dataset (6,000 donors, about 25,000 units). Takes a few minutes.
+Measures query and procedure times with and without the indexes on the full-size dataset that Step 2's performance targets assume (10,000 donors, about 54,000 donations and 117,000 units), including PR-05 (expiring 50,000 units). Generating the data takes about 3 minutes; the benchmark takes longer, mostly for the PR-05 run without indexes.
 
 ```bash
 createdb vytal_bench
 PGDATABASE=vytal_bench ./setup.sh --no-data
-PGDATABASE=vytal_bench python bench/bulk_data.py
+PGDATABASE=vytal_bench python bench/bulk_data.py --donors 10000 --days 1460 --regular .60 --churn .04
 PGDATABASE=vytal_bench python bench/bench.py      # writes bench/results.md
 ```
 
@@ -170,7 +212,6 @@ PGDATABASE=vytal_bench python bench/bench.py      # writes bench/results.md
 | `psql: command not found` | Add PostgreSQL's `bin` folder to your PATH (step 1) and open a new terminal. |
 | `password authentication failed` | `PGPASSWORD` is wrong or not set in this terminal. |
 | `permission denied to create role` | `PGUSER` is not a superuser; use `postgres`. |
-| `role "vytal_app" is not permitted to log in` | Re-run `./setup.sh`; it updates the role. |
 | `database "vytal" already exists` | Run `dropdb vytal` first, or skip `createdb`. |
 | `ModuleNotFoundError: No module named 'psycopg'` | The virtual environment is not active; run the `activate` command from step 2. |
 | `./setup.sh: Permission denied` | Run `chmod +x setup.sh` once. |

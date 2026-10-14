@@ -19,7 +19,7 @@ from vytal.queries import load  # noqa: E402
 INDEX_SQL = (ROOT / "sql" / "04_indexes.sql").read_text()
 INDEXES = re.findall(r"CREATE (?:UNIQUE )?INDEX (\w+)", INDEX_SQL)
 TARGET_MS = {"PR-01 eligible_donors()": 2000, "PR-02 allocate() 10 units": 1000,
-             "PR-03 inventory dashboard": 3000}
+             "PR-03 inventory dashboard": 3000, "PR-05 expire_units() 50k units": 60000}
 RUNS = 5
 
 
@@ -79,6 +79,46 @@ def pr03(con, cur, q02):
     return median_ms(cur, lambda c: (c.execute(q02).fetchall(), c.execute("SELECT * FROM v_inventory").fetchall()))
 
 
+PR05_UNITS = 50000
+EXPIRE_SQL = ("UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry' "
+              "WHERE status IN ('Collected','Available') AND expires_at <= now()")
+
+
+def pr05_setup(cur):
+    """Puts N units on the shelf already past expiry, without firing triggers; returns N."""
+    cur.execute("SET LOCAL session_replication_role = replica")
+    cur.execute("CREATE TEMP TABLE pr05_units ON COMMIT DROP AS SELECT unit_id FROM blood_unit ORDER BY unit_id LIMIT %s",
+                (PR05_UNITS,))
+    cur.execute("DELETE FROM wastage_record WHERE unit_id IN (SELECT unit_id FROM pr05_units)")
+    cur.execute("UPDATE blood_unit SET status = 'Available', expires_at = now() - interval '1 minute' "
+                "WHERE unit_id IN (SELECT unit_id FROM pr05_units)")
+    cur.execute("SET LOCAL session_replication_role = origin")
+    return cur.execute("SELECT count(*) FROM blood_unit WHERE status IN ('Collected','Available','Reserved') "
+                       "AND expires_at <= now()").fetchone()[0]
+
+
+def pr05(con, cur, runs):
+    def once():
+        n = pr05_setup(cur)
+        t = time.perf_counter()
+        got = cur.execute("SELECT expire_units()").fetchone()[0]
+        return (time.perf_counter() - t) * 1000, n, got
+
+    done = [in_savepoint(con, once) for _ in range(runs)]
+    assert all(n == got for _, n, got in done), done
+    return round(statistics.median(ms for ms, _, _ in done), 2), done[0][1]
+
+
+def pr05_triggers(con, cur):
+    """Per-trigger time for the job's main UPDATE, from EXPLAIN ANALYZE of that same statement."""
+    def once():
+        pr05_setup(cur)
+        cur.execute("EXPLAIN (ANALYZE, FORMAT TEXT) " + EXPIRE_SQL)
+        plan = "\n".join(r[0] for r in cur.fetchall())
+        return {name: float(ms) for name, ms in re.findall(r"Trigger (\w+): time=([\d.]+)", plan)}
+    return in_savepoint(con, once)
+
+
 def run_mode(con, with_indexes):
     queries = load()
     out = {}
@@ -99,6 +139,11 @@ def run_mode(con, with_indexes):
         record("PR-01 eligible_donors()", pr01(con, cur))
         record("PR-02 allocate() 10 units", pr02(con, cur))
         record("PR-03 inventory dashboard", pr03(con, cur, queries["Q02"].sql))
+        # without indexes each alert check scans blood_unit, so one run is enough to show the difference
+        runs = 3 if with_indexes else 1
+        ms, n = pr05(con, cur, runs)
+        record("PR-05 expire_units() 50k units", ms, n=n, runs=runs,
+               **({"triggers_ms": pr05_triggers(con, cur)} if with_indexes else {}))
     return out
 
 
@@ -123,6 +168,8 @@ def main():
         target = f"< {TARGET_MS[op] / 1000:g} s" if op in TARGET_MS else ""
         plan = changed(b.get("scans", []), a.get("scans", [])) if "scans" in b else ""
         lines.append(f"| {op} | {target} | {b['ms']} | {a['ms']} | {plan} |")
+    lines += ["", f"PR-05 times the nightly job over {results['after']['PR-05 expire_units() 50k units']['n']:,} expired units "
+              "with every trigger on: median of 3 runs with indexes, 1 run without."]
     (ROOT / "bench" / "results.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
