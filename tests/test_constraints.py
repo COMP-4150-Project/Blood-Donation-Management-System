@@ -23,7 +23,7 @@ def test_duplicate_email_rejected(db):
 
 
 def test_unknown_blood_group_rejected(db):
-    assert "foreign key" in db.fails("UPDATE donor SET blood_group='C+' WHERE user_id=%s", (db.donor(),))
+    assert "foreign key" in db.fails("UPDATE donor SET blood_group='C+' WHERE user_id=%s", (db.donor(verified=False),))
 
 
 def test_negative_volume_rejected(db):
@@ -39,6 +39,7 @@ def test_staff_needs_a_facility(db):
 
 def test_verification_needs_both_columns_and_a_group(db):
     d = db.donor(group=None, verified=False)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))   # staff, so the FR-03/FR-09 guard lets the CHECK decide
     assert "check" in db.fails("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (db.nurse, d))
     v = db.donor()
     assert "check" in db.fails("UPDATE donor SET verified_at=NULL WHERE user_id=%s", (v,))

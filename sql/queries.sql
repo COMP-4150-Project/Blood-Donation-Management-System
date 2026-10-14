@@ -1,5 +1,5 @@
 -- Vytal key queries. Each block runs as-is in psql against a seeded database (no parameters to fill in).
--- Header lines are read by bench/run_queries.py:  -- name | title | serves | why
+-- Header lines (name, title, serves, why) are read by vytal/queries.py for the tests, benchmark and report.
 SET search_path = vytal;
 
 -- name: Q01

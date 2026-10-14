@@ -23,7 +23,7 @@ from vytal.queries import load  # noqa: E402
 
 OUT = ROOT.parent / "Vytal - Step 4 Implementation Report.docx"
 FONT, MONO = "Calibri", "Consolas"
-TEAM = [("Jainam Sheth", "Systems Analyst"), ("Mohammad Imaad", "Data Modeling Specialist"),
+TEAM = [("Jainam Jaykumar Sheth", "Systems Analyst"), ("Mohammad Imaad", "Data Modeling Specialist"),
         ("Aakanksha Mandal", "Backend Engineer"), ("Shruti Dadhania", "UX & Integration Specialist")]
 
 doc = Document()
@@ -140,7 +140,7 @@ def objects(path):
     for line in sql_block(path).splitlines():
         if line.startswith("--"):
             comment = re.sub(r"^-+\s*", "", line).strip(" -") or comment
-        m = re.match(r"CREATE (FUNCTION|TRIGGER|VIEW) (\w+)", line)
+        m = re.match(r"CREATE (FUNCTION|PROCEDURE|TRIGGER|VIEW) (\w+)", line)
         if m:
             out.append((m.group(2), m.group(1).title(), comment))
     return out
@@ -156,7 +156,7 @@ bench = json.loads((ROOT / "bench" / "results.json").read_text())
 
 # ---------------------------------------------------------------------- title
 p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-fmt(p.add_run("Vytal: Blood Donor and Request Management System"), 18, bold=True)
+fmt(p.add_run("Vytal: Donor Eligibility and Blood Request Management System"), 18, bold=True)
 p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 fmt(p.add_run("COMP-4150 Project, Step 4: Implementation"), 14)
 p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -169,11 +169,13 @@ counts = dict(q("SELECT 'tables', count(*) FROM information_schema.tables WHERE 
                 "UNION ALL SELECT 'fks', count(*) FROM information_schema.table_constraints WHERE table_schema='vytal' AND constraint_type='FOREIGN KEY' "
                 "UNION ALL SELECT 'checks', count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='vytal' AND c.contype='c' "
                 "UNION ALL SELECT 'triggers', count(*) FROM information_schema.triggers WHERE trigger_schema='vytal' "
-                "UNION ALL SELECT 'functions', count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='vytal' AND p.prorettype <> 'trigger'::regtype "
+                "UNION ALL SELECT 'functions', count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='vytal' AND p.prokind='f' AND p.prorettype <> 'trigger'::regtype "
+                "UNION ALL SELECT 'procedures', count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='vytal' AND p.prokind='p' "
                 "UNION ALL SELECT 'indexes', count(*) FROM pg_indexes WHERE schemaname='vytal'")[1])
 P(f"Vytal's Step 3 design is now a running PostgreSQL 16 database: **{counts['tables']} tables**, **{counts['views']} views**, "
   f"**{counts['fks']} foreign keys**, **{counts['checks']} CHECK constraints**, **{counts['triggers']} trigger events**, "
-  f"**{counts['functions']} stored functions** and **{counts['indexes']} indexes**. Hand-written sample data covers ten months of "
+  f"**{counts['functions']} stored functions**, **{counts['procedures']} stored procedure{'s' if counts['procedures'] != 1 else ''}** "
+  f"and **{counts['indexes']} indexes**. Hand-written sample data covers ten months of "
   f"realistic activity, 13 key queries answer the questions in our requirements, and a Python backend wraps every "
   f"operation the Step 5 screens will call. **{len(cases)} automated tests** pass against it.")
 P("Business rules live in the database, not in the screens (DI-03). A donation for an ineligible donor, a unit released before "
@@ -182,10 +184,11 @@ table(["Path", "Contents"], [
     ("setup.sh", "Builds the database from scratch: ./setup.sh (with sample data) or ./setup.sh --no-data"),
     ("sql/01_schema.sql", "Tables, keys and constraints, generated from the Step 3 design (a test keeps them identical)"),
     ("sql/02_logic.sql", "Triggers, views and the core procedures (eligibility, unit lifecycle, alerts, allocation, lookback, audit)"),
-    ("sql/03_procedures.sql", "Procedures added in Step 4 for registration, screening, testing, donation calls and login lockout"),
+    ("sql/03_procedures.sql", "Use-case routines: registration, screening, deferrals, donations, tests, discards, thresholds, donation calls, "
+                              "account and facility management, login lockout, and the nightly expiry procedure"),
     ("sql/04_indexes.sql", "Indexes kept only where the benchmark showed they pay off"),
     ("sql/05_reference_data.sql", "Clinical reference data (blood groups, compatibility, shelf lives, intervals, deferral reasons)"),
-    ("sql/06_security.sql", "Application and reporting roles with least privilege"),
+    ("sql/06_security.sql", "Application and reporting roles with least privilege and passwords"),
     ("sql/queries.sql", "The 13 key queries (Section 5)"),
     ("sql/07_sample_data.sql", "Hand-written sample data: explicit INSERTs for every table, loaded through the real triggers"),
     ("vytal/", "Backend: auth.py (password hashing), db.py (sessions), services.py (operations), queries.py"),
@@ -216,10 +219,11 @@ P("**Least privilege (SE-04).** The application connects as vytal_app, which can
 # ---------------------------------------------------------------------- 3. data
 H("3. Data population and integrity")
 P("sql/07_sample_data.sql is written by hand as plain INSERT statements: two hospitals and a blood centre, two admins, six staff and "
-  "36 donors with realistic Canadian blood-group shares, ten months of screenings, donations, component units, test results, deferrals "
+  "45 donors with realistic Canadian blood-group shares, ten months of screenings, donations, component units, test results, deferrals "
   "and hospital requests. Each scenario in our requirements has rows behind it: an under-age and an under-weight sign-up, a donor "
-  "with an unknown group, temporary deferrals from the questionnaire and from a low hemoglobin reading, a positive hepatitis B test, "
-  "platelets that expired on the shelf, and an Emergency request for a patient of unknown group.")
+  "with an unknown group, temporary deferrals from the questionnaire and from a low hemoglobin reading, positive hepatitis B and HIV "
+  "tests, lapsed regular donors, a platelet donor, platelets that expired on the shelf, and an Emergency request for a patient of "
+  "unknown group. Every deferral reason and every component type appears at least once.")
 P("Every row is inserted through the real tables, so the constraints and triggers check the sample data exactly as they check live "
   "data. While writing the file, the triggers refused rows that broke a rule (for example, releasing a unit from a donor who had "
   "already been flagged), and the file was corrected to follow the true order of events. Dates are written relative to now(), so the "
@@ -238,7 +242,9 @@ bullets([re.sub(r"^test_", "", n).replace("_", " ").capitalize() for n in data_t
 H("Bad data is refused", 2)
 P("Each row below was attempted against the database; the message is what PostgreSQL returned.")
 probes = [
-    ("Unknown blood group", "UPDATE donor SET blood_group='C+' WHERE user_id=(SELECT min(user_id) FROM donor)"),
+    ("Unknown blood group", "UPDATE donor SET blood_group='C+' WHERE user_id=(SELECT min(user_id) FROM donor WHERE verified_by IS NULL)"),
+    ("Non-staff changing a verified group", "UPDATE donor SET blood_group='AB+' WHERE user_id=(SELECT min(user_id) FROM donor WHERE verified_by IS NOT NULL)"),
+    ("Rule edit leaving a group without donors", "DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='O-'"),
     ("Negative volume", "UPDATE donation SET volume_ml=-1 WHERE donation_id=1"),
     ("Second donation inside the interval", "INSERT INTO donation (donor_id,recorded_by,donation_type_code,donated_at,volume_ml,hemoglobin_gl) "
      "SELECT d.donor_id, d.recorded_by, 'WB', now(), 450, 150 FROM donation d JOIN donor o ON o.user_id=d.donor_id "
@@ -271,7 +277,10 @@ table(["Attempt", "Database response"], rows, [2.0, 4.5])
 # ---------------------------------------------------------------------- 4. procedures and triggers
 H("4. Stored procedures, triggers and views")
 P("Each object below enforces or automates one requirement from Step 2. Triggers keep stored values honest (next eligible date, "
-  "donation status, alerts, wastage) and refuse rule breaks; procedures run multi-step operations as one transaction.")
+  "donation status, alerts, wastage) and refuse rule breaks. Operations that return a value to the caller (allocate() returns the "
+  "units reserved) are functions run with SELECT; the scheduled nightly job is a stored procedure run with CALL. Each runs its steps "
+  "as one transaction. The account, facility, threshold, deferral and discard routines also check in the database that the acting "
+  "user holds the right role and is the user the session belongs to (require_role, require_session_user).")
 cat = objects("02_logic.sql") + objects("03_procedures.sql")
 seen, rows = set(), []
 for name, kind, why in cat:
@@ -319,18 +328,29 @@ for name, qq in load().items():
     widths = [6.5 / len(cols)] * len(cols)
     table(cols, [[cell(v) for v in r] for r in shown], widths, 7.5 if len(cols) > 7 else 8.5)
     note = f"{len(res)} row(s)" + (f", first {len(shown)} shown" if len(res) > len(shown) else "")
-    note += f"; {query_ms[name]:.1f} ms on the larger benchmark dataset"
+    note += f"; {query_ms[name]:.1f} ms on the full-size benchmark dataset"
     P(note, 9, WD_ALIGN_PARAGRAPH.LEFT)
 
 # ---------------------------------------------------------------------- 6. efficiency
 page_break()
 H("6. Efficiency")
-TARGETS = {"PR-01": "< 2 s", "PR-02": "< 1 s", "PR-03": "< 3 s"}
-P(f"Timings come from a much larger dataset made by bench/bulk_data.py ({bench_rows}), so that indexes matter. Each figure is the "
-  "median of five warm runs, measured once without the indexes in sql/04_indexes.sql and once with them; every run happens inside a "
-  "transaction that is rolled back. The Step 2 performance targets PR-01 to PR-03 are met with a wide margin. PR-05 (the nightly "
-  "expiry over 50,000 units) and PR-06 (load) were not stress-tested at full scale; the 50-session concurrency test in Section 8 covers "
-  "PR-06's correctness.")
+TARGETS = {"PR-01": "< 2 s", "PR-02": "< 1 s", "PR-03": "< 3 s", "PR-05": "< 60 s"}
+pr05 = next(v for k, v in bench["after"].items() if k.startswith("PR-05"))
+P(f"bench/bulk_data.py generated the full dataset that Step 2's performance targets assume ({bench_rows}). It replays four years "
+  "of clinic activity through the real tables, so every row passed the same constraints and triggers as live data. Each figure is "
+  "the median of five warm runs (PR-05: three runs with indexes, one without), measured once without the indexes in "
+  "sql/04_indexes.sql and once with them, inside a transaction that is rolled back. PR-01, PR-02, PR-03 and PR-05 are all met. "
+  "PR-04 (alert in the same transaction) and PR-06 (50 concurrent users) are covered by tests in Section 8.")
+H("PR-05 and the low-stock alert trigger", 2)
+P(f"PR-05 forces {pr05['n']:,} units past their expiry date and times expire_units(), the function the nightly run_nightly_expiry() procedure calls, with every trigger on. The first full-size run "
+  "failed the target: 137.7 s with indexes. The time split showed the low-stock alert trigger used 153 s of it, because it ran once per "
+  "unit and recounted that blood group's stock each time. It now runs once per statement, using PostgreSQL transition tables, and "
+  "checks each facility, blood group and component the statement touched once. A first version joined the old and new transition "
+  "tables; they carry no statistics, so the planner chose a nested loop and the job got slower. The final version reads each table "
+  "on its own, which is safe because the alert check is idempotent. Alerts still open and clear in the same transaction (PR-04): "
+  "replaying the sample data and every unit-changing procedure against the old and new triggers gave identical alerts, and a "
+  "regression test covers one update that moves two groups across their minimums in opposite directions. "
+  f"The job now takes {pr05['ms'] / 1000:.1f} s.", 10)
 
 
 def plan_change(b, a):
@@ -339,8 +359,9 @@ def plan_change(b, a):
 
 
 table(["Operation", "Target", "Before (ms)", "After (ms)", "New index use"],
-      [(op, TARGETS.get(op.split()[0], ""), f"{b['ms']:.1f}", f"{bench['after'][op]['ms']:.1f}", plan_change(b, bench["after"][op]))
-       for op, b in bench["before"].items()], [2.3, 0.6, 0.8, 0.8, 2.0], 8)
+      [(op, TARGETS.get(op.split()[0], ""), f"{bench['before'][op]['ms']:.1f}" if op in bench["before"] else "n/a",
+        f"{a['ms']:.1f}", plan_change(bench["before"].get(op, {}), a)) for op, a in bench["after"].items()],
+      [2.3, 0.6, 0.8, 0.8, 2.0], 8)
 H("Indexes kept", 2)
 P("PostgreSQL does not index foreign-key columns on its own. Each index below is kept because a measured query or procedure uses it; "
   "candidates that did not help were dropped.")
@@ -358,7 +379,7 @@ page_break()
 H("7. Backend code")
 P("vytal/services.py is the layer the Step 5 screens will call. Each function is one transaction for one acting user: it checks the "
   "caller's role and facility (SE-02), passes every value as a query parameter, never as SQL text (SE-03), and stamps the acting "
-  "user into the session so the audit trigger records who made each change (FR-33). Passwords are salted scrypt hashes (SE-01); "
+  "user into the session so the audit trigger records who made each change (FR-33). Passwords are salted bcrypt hashes, cost 12 (SE-01); passwords over bcrypt's 72-byte limit are refused; "
   "five wrong passwords lock the account for 15 minutes (SE-05).")
 svc = (ROOT / "vytal" / "services.py").read_text()
 rows = [(m.group(1), (m.group(3) or "").strip().split("\n")[0]) for m in
@@ -377,7 +398,8 @@ about = {"test_schema": "Schema matches the Step 3 design; FKs restrict deletes;
          "test_queries": "Every key query runs within PR-01's 2 s bound and matches an independent recomputation",
          "test_sample_data": "Invariants of the sample data (wastage, issued units, request statuses, dates)",
          "test_integration": "Full journeys through the backend, role and facility checks, SQL injection, 50 concurrent sessions",
-         "test_security": "Application and reporting roles cannot rewrite history or read secrets"}
+         "test_security": "Application and reporting roles cannot rewrite history or read secrets",
+         "test_auth": "bcrypt hashing, the 72-byte limit and seeded logins"}
 table(["Test file", "Tests", "What it proves"], [(f, len(by_file.get(f, [])), a) for f, a in about.items()], [1.5, 0.6, 4.4], 9)
 P("**Do the tests catch bugs?** We planted three bugs in turn (allocation ignoring expiry order, lockout at the sixth failure instead "
   "of the fifth, an Issued unit allowed back to Available). Each one made at least one test fail. The tests also caught real defects "
@@ -392,13 +414,16 @@ bullets(["Writing the sample data, the flagged-donor rule refused to release don
 H("9. Limitations and what comes next")
 bullets(["**No inter-facility transfers.** A hospital can only use units collected on site (a could-have in Step 2). Q07 shows the cost: "
          "platelets, with a five-day shelf life, are mostly wasted at a single small site. Transfers are the obvious next feature.",
-         "**Role checks for screens live in the backend.** The database enforces every clinical rule, but which facility a staff member "
-         "may see is checked in services.py; PostgreSQL row-level security would move that into the database too.",
+         "**The backend is the trust boundary for who is acting.** The database enforces every clinical rule, and checks the role for "
+         "account, facility, threshold, deferral and discard routines, but it trusts the acting user that services.py stamps into the "
+         "session after login. Role checks for the clinical workflow (recording donations and tests, allocation, quarantine) and which "
+         "facility's rows a staff member may read are enforced in services.py. PostgreSQL row-level security with one database login per "
+         "user would move these into the database too.",
          "**Step 5** builds the Flask screens on vytal/services.py; the backend functions already match the Step 2 use cases."], 10)
 
 H("10. Contributions")
 table(["Member", "Step 4 contribution"], [
-    ("Jainam Sheth", "Roadmap, cross-checking against Steps 2 and 3, key queries, testing strategy, this report"),
+    ("Jainam Jaykumar Sheth", "Roadmap, cross-checking against Steps 2 and 3, key queries, testing strategy, this report"),
     ("Mohammad Imaad", "Schema and constraints, reference data, sample data"),
     ("Aakanksha Mandal", "Stored procedures and triggers, backend services, concurrency tests"),
     ("Shruti Dadhania", "Backend operations as seen from the Step 5 screens, input validation messages, report layout"),

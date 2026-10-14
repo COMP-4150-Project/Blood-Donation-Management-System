@@ -1,10 +1,33 @@
 """sql/07_sample_data.sql is internally consistent: every invariant a real clinic's data must satisfy holds."""
+from conftest import PREFIX, build, connect, drop
 
 
 def test_row_volumes(sdb):
     counts = dict(sdb.q("SELECT 'donors', count(*) FROM donor UNION ALL SELECT 'donations', count(*) FROM donation "
                         "UNION ALL SELECT 'units', count(*) FROM blood_unit UNION ALL SELECT 'requests', count(*) FROM blood_request"))
-    assert counts == {"donors": 36, "donations": 77, "units": 153, "requests": 26}
+    assert counts == {"donors": 45, "donations": 103, "units": 189, "requests": 69}
+
+
+def test_every_table_has_rows(sdb):
+    tables = [t for (t,) in sdb.q("SELECT tablename FROM pg_tables WHERE schemaname = 'vytal' ORDER BY 1")]
+    empty = [t for t in tables if sdb.one(f"SELECT count(*) FROM vytal.{t}") == 0]
+    assert len(tables) == 29 and empty == []
+
+
+def test_every_deferral_reason_and_component_appears(sdb):
+    assert sdb.one("SELECT count(*) FROM deferral_reason r WHERE NOT EXISTS "
+                   "(SELECT 1 FROM deferral d WHERE d.reason_code = r.reason_code)") == 0
+    assert sdb.one("SELECT count(*) FROM component_type c WHERE NOT EXISTS "
+                   "(SELECT 1 FROM blood_unit u WHERE u.component_code = c.component_code)") == 0
+
+
+def test_history_load_is_not_audited(sdb):
+    """FR-33: the audit log starts with today's live actions; the migrated history adds no INSERT rows."""
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name IN "
+                   "('user_account','facility','donor','donation','blood_unit')") == 0
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'blood_request'") == 4   # today's open requests
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'deferral' "
+                   "AND user_id = 102") == 1                     # the donor's own screening today (UC-04)
 
 
 def test_every_wasted_unit_has_exactly_one_wastage_record(sdb):
@@ -60,3 +83,19 @@ def test_history_timestamps_are_in_the_past_and_ordered(sdb):
     for table, col in (("test_result", "tested_at"), ("blood_request", "closed_at"), ("request_unit", "issued_at"),
                        ("blood_unit", "status_changed_at"), ("wastage_record", "wasted_at")):
         assert sdb.one(f"SELECT count(*) FROM {table} WHERE {col} > now()") == 0, table
+
+
+def test_sample_data_is_reproducible(seeded_db):
+    """MA-03: loading the sample data twice gives identical data (dates are relative to the load time)."""
+    other = build(PREFIX + "_seeded_again", with_data=True)
+    sig = ("SELECT md5(string_agg(concat_ws('|', o.donor_code, o.blood_group, CASE WHEN o.next_eligible_date = 'infinity' THEN -1 ELSE o.next_eligible_date - CURRENT_DATE END, d.donation_type_code, "
+           "u.unit_id, u.status, ru.request_id), ',' ORDER BY o.donor_code, d.donation_id, u.unit_id, ru.request_id)) "
+           "FROM donor o LEFT JOIN donation d ON d.donor_id = o.user_id LEFT JOIN blood_unit u USING (donation_id) "
+           "LEFT JOIN request_unit ru USING (unit_id)")
+    a, b = connect(seeded_db), connect(other)
+    try:
+        assert a.execute(sig).fetchone() == b.execute(sig).fetchone()
+    finally:
+        a.close()
+        b.close()
+        drop(other)
