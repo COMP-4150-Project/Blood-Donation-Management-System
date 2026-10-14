@@ -26,7 +26,7 @@ def world():
         admin = con.execute("INSERT INTO user_account (email,password_hash,first_name,last_name,role) "
                             "VALUES ('admin@v.ca','x','A','B','Admin') RETURNING user_id").fetchone()[0]
         con.execute("INSERT INTO admin VALUES (%s)", (admin,))
-        staff = [con.execute("SELECT create_staff(%s,%s,'x','S','T',%s,'Nurse')", (admin, f"s{i}@v.ca", f)).fetchone()[0]
+        staff = [con.execute("CALL create_staff(%s,%s,'x','S','T',%s,'Nurse')", (admin, f"s{i}@v.ca", f)).fetchone()[0]
                  for i, f in enumerate(fac)]
     return {"db": name, "admin": admin, "windsor": staff[0], "london": staff[1]}
 
@@ -58,7 +58,8 @@ def test_donor_journey_from_registration_to_transfusion(world):
     s = world["windsor"]
     donor = new_donor("journey@v.ca")
     assert svc.login("JOURNEY@v.ca", PASSWORD) == (donor, "Donor")
-    assert svc.donor_home(donor)["status"] == "Eligible"
+    assert svc.donor_home(donor)["status"] == "Complete screening to confirm eligibility"    # UC-05 2a
+    assert svc.complete_screening(donor, CLEAN) == "Eligible"
     _, units = donate_and_release(s, donor, "O+")
     assert any(g == "O+" and c == "RBC" and avail >= 1 for g, c, avail, *_ in svc.inventory(s))
     req = svc.submit_request(s, "P-100", "O+", "RBC", 1, "Routine", SOON)
@@ -115,6 +116,7 @@ def test_emergency_shortfall_triggers_a_donation_call(world):
     w = world["windsor"]
     called = new_donor("oneg@v.ca", "O-", sex="F")
     svc.verify_blood_group(w, called, "O-")
+    svc.complete_screening(called, CLEAN)                                              # UC-05 2a: screened donors only
     req = svc.submit_request(w, "P-300", None, "RBC", 2, "Emergency", SOON)
     assert req["shortfall"] == 2
     codes = [c for c, *_ in svc.find_donors(w, req["request_id"])]
@@ -183,7 +185,7 @@ def test_a_reserved_red_cell_does_not_hide_its_plasma(world):
         rid = holder.execute("INSERT INTO blood_request (requested_by,patient_ref,recipient_group,component_code,units_requested,"
                              "urgency,required_by) VALUES (%s,'H-1','B-','RBC',1,'Urgent',now()+interval '1 hour') RETURNING request_id",
                              (w,)).fetchone()[0]
-        assert holder.execute("SELECT allocate(%s)", (rid,)).fetchone()[0] == 1
+        assert holder.execute("CALL allocate(%s)", (rid,)).fetchone()[0] == 1
         assert svc.submit_request(w, "H-2", "B-", "PLASMA", 1, "Urgent", SOON)["reserved"] == 1
         holder.rollback()
 
@@ -226,7 +228,10 @@ def test_demo_script_replays_scenario_1(monkeypatch):
     done = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "demo.py")], env=env,
                           capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    assert "reserved 3, shortfall 1" in done.stdout and "reserved 4 of 4, shortfall 0" in done.stdout
+    for line in ("units reserved: 3", "shortfall: 1", "eligible donors found: 14", "donors called: 14",
+                 "units reserved: 4", "reserved groups: A+,O-,O-,O-", "donors who accepted: 2", "request status: Fulfilled",
+                 "Scenario 1 replayed with every number as specified"):
+        assert line in done.stdout, line
     assert "request status: Fulfilled" in done.stdout
     drop("vytal_demo")
 
@@ -361,12 +366,12 @@ def test_quarantine_waits_for_a_concurrent_allocation(world):
                         "urgency,required_by) VALUES (%s,'R-1','AB-','RBC',1,'Routine',now()+interval '1 day') RETURNING request_id",
                         (w,)).fetchone()[0]
         assert a.execute("SELECT unit_id FROM request_unit WHERE request_id=%s", (rid,)).fetchone() is None
-        a.execute("SELECT allocate(%s)", (rid,))
+        a.execute("CALL allocate(%s)", (rid,))
         assert a.execute("SELECT unit_id FROM request_unit WHERE request_id=%s", (rid,)).fetchone() == (units[0],)
 
         def quarantine():
             try:
-                b.execute("SELECT quarantine_donor(%s)", (donor,))
+                b.execute("CALL quarantine_donor(%s)", (donor,))
                 b.commit()
             except Exception as e:          # surfaced by the assertion below
                 errors.append(e)
@@ -388,4 +393,4 @@ def test_quarantine_waits_for_a_concurrent_allocation(world):
         assert con.execute("SELECT status FROM blood_unit WHERE unit_id=%s", (units[0],)).fetchone() == ("Quarantined",)
         assert con.execute("SELECT count(*) FROM request_unit ru JOIN blood_unit u USING (unit_id) WHERE u.status = 'Quarantined' "
                            "AND ru.released_at IS NULL AND ru.issued_at IS NULL").fetchone()[0] == 0
-        assert con.execute("SELECT close_request(%s, TRUE)", (rid,)).fetchone()[0] == "Cancelled"
+        assert con.execute("CALL close_request(%s, TRUE)", (rid,)).fetchone()[0] == "Cancelled"

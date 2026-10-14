@@ -5,13 +5,13 @@ from conftest import PREFIX, build, connect, drop
 def test_row_volumes(sdb):
     counts = dict(sdb.q("SELECT 'donors', count(*) FROM donor UNION ALL SELECT 'donations', count(*) FROM donation "
                         "UNION ALL SELECT 'units', count(*) FROM blood_unit UNION ALL SELECT 'requests', count(*) FROM blood_request"))
-    assert counts == {"donors": 45, "donations": 103, "units": 189, "requests": 69}
+    assert counts == {"donors": 57, "donations": 115, "units": 213, "requests": 80}
 
 
 def test_every_table_has_rows(sdb):
     tables = [t for (t,) in sdb.q("SELECT tablename FROM pg_tables WHERE schemaname = 'vytal' ORDER BY 1")]
     empty = [t for t in tables if sdb.one(f"SELECT count(*) FROM vytal.{t}") == 0]
-    assert len(tables) == 29 and empty == []
+    assert len(tables) == 30 and empty == []
 
 
 def test_every_deferral_reason_and_component_appears(sdb):
@@ -23,9 +23,14 @@ def test_every_deferral_reason_and_component_appears(sdb):
 
 def test_history_load_is_not_audited(sdb):
     """FR-33: the audit log starts with today's live actions; the migrated history adds no INSERT rows."""
-    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name IN "
-                   "('user_account','facility','donor','donation','blood_unit')") == 0
-    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'blood_request'") == 4   # today's open requests
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'facility'") == 0
+    assert sdb.one("SELECT count(*) FROM audit_log a JOIN donation d ON d.donation_id::text = a.record_id "
+                   "WHERE a.action = 'INSERT' AND a.table_name = 'donation' AND d.donated_at < CURRENT_DATE") == 0
+    assert sdb.one("SELECT count(*) FROM audit_log a JOIN user_account u ON u.user_id::text = a.record_id "
+                   "WHERE a.action = 'INSERT' AND a.table_name IN ('user_account','donor') AND u.created_at < CURRENT_DATE") == 0
+    assert sdb.one("SELECT count(*) FROM audit_log a JOIN v_blood_unit u ON u.unit_id = a.record_id "
+                   "WHERE a.action = 'INSERT' AND a.table_name = 'blood_unit' AND u.collected_at < CURRENT_DATE") == 0
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'blood_request'") == 5   # today's open requests
     assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'deferral' "
                    "AND user_id = 102") == 1                     # the donor's own screening today (UC-04)
 
@@ -99,3 +104,31 @@ def test_sample_data_is_reproducible(seeded_db):
         a.close()
         b.close()
         drop(other)
+
+
+def test_todays_live_actions_are_audited_with_the_actor(sdb):
+    """FR-33: today's donation and profile change carry the staff member or donor who made them."""
+    assert sdb.q("SELECT user_id FROM audit_log WHERE table_name = 'donation' AND action = 'INSERT'") == [(4,)]
+    assert sdb.q("SELECT DISTINCT user_id FROM audit_log WHERE table_name = 'user_account' AND action = 'UPDATE'") == [(131,)]
+    assert sdb.one("SELECT count(*) FROM audit_log WHERE table_name = 'user_account' AND action = 'INSERT'") == 1   # new sign-up
+
+
+def test_donation_calls_have_realistic_responses(sdb):
+    """FR-26 / FR-27: several calls, each answered by some donors and still pending for others."""
+    assert sdb.one("SELECT count(*) FROM donation_call") >= 3
+    assert sdb.one("SELECT count(*) FROM call_recipient") >= 10
+    assert {r for (r,) in sdb.q("SELECT DISTINCT response FROM call_recipient")} == {"Accepted", "Declined", "Pending"}
+    assert sdb.one("SELECT count(*) FROM call_recipient WHERE call_id = 1 AND response = 'Accepted'") == 2   # Scenario 1 outcome
+
+
+def test_lookback_quarantined_several_units(sdb):
+    """FR-31: two lookbacks (D-1042 after a positive test, D-1043 after reporting malaria) pulled their units."""
+    assert sdb.one("SELECT count(*) FROM blood_unit WHERE status = 'Quarantined'") >= 3
+    assert sdb.q("SELECT DISTINCT donor_id FROM v_blood_unit WHERE status = 'Quarantined' ORDER BY 1") == [(127,), (128,)]
+
+
+def test_fourteen_o_negative_donors_can_be_called_for_tr_2291(sdb):
+    """Scenario 1 step 5: 14 O-negative donors are eligible today for the unknown-group trauma patient."""
+    found = sdb.q("SELECT blood_group FROM eligible_donors(23)")
+    assert len(found) == 14 and {g for (g,) in found} == {"O-"}
+

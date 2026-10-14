@@ -226,9 +226,10 @@ CREATE TRIGGER threshold_alert AFTER INSERT OR UPDATE OF min_units ON stock_thre
     FOR EACH ROW EXECUTE FUNCTION trg_threshold_alert();
 
 -- ---------------------------------------------------------------- FR-23 FEFO allocation with O-negative conservation, DI-01
-CREATE FUNCTION allocate(p_request int) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE r blood_request%ROWTYPE; need int; got int := 0; u record; fac int;
+CREATE PROCEDURE allocate(p_request int, INOUT reserved_count int DEFAULT NULL) LANGUAGE plpgsql AS $$
+DECLARE r blood_request%ROWTYPE; need int; u record; fac int;
 BEGIN
+    reserved_count := 0;
     SELECT * INTO r FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF r.status IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
     SELECT facility_id INTO fac FROM staff WHERE user_id = r.requested_by;
@@ -256,13 +257,13 @@ BEGIN
     LOOP
         INSERT INTO request_unit (request_id, unit_id) VALUES (p_request, u.unit_id);
         UPDATE blood_unit SET status = 'Reserved' WHERE unit_id = u.unit_id;
-        got := got + 1;
+        reserved_count := reserved_count + 1;
     END LOOP;
-    RETURN got;
 END $$;
 
 -- FR-28 issue reserved units and close; unused units go back to Available
-CREATE FUNCTION close_request(p_request int, p_cancel boolean DEFAULT FALSE) RETURNS text LANGUAGE plpgsql AS $$
+CREATE PROCEDURE close_request(p_request int, p_cancel boolean DEFAULT FALSE, INOUT final_status text DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 DECLARE issued int; req int; st text;
 BEGIN
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
@@ -287,27 +288,12 @@ BEGIN
     SELECT count(*) FILTER (WHERE issued_at IS NOT NULL) INTO issued FROM request_unit WHERE request_id = p_request;
     st := CASE WHEN p_cancel THEN 'Cancelled' WHEN issued >= req THEN 'Fulfilled' ELSE 'Partially Fulfilled' END;
     UPDATE blood_request SET status = st, closed_at = now() WHERE request_id = p_request;
-    RETURN st;
-END $$;
-
--- FR-20 nightly expiry
-CREATE FUNCTION expire_units() RETURNS int LANGUAGE plpgsql SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
-DECLARE n int;
-BEGIN
-    -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
-    UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
-      AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
-    UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now();
-    UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
-    WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
-    GET DIAGNOSTICS n = ROW_COUNT;
-    INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'expire_units', n::text);
-    RETURN n;
+    final_status := st;
 END $$;
 
 -- FR-31 quarantine every Available / Reserved unit from a donor; UC-22 3a open requests that lose a unit are re-allocated
-CREATE FUNCTION quarantine_donor(p_donor int) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE n int; r int; affected int[];
+CREATE PROCEDURE quarantine_donor(p_donor int, INOUT quarantined int DEFAULT NULL) LANGUAGE plpgsql AS $$
+DECLARE r int; got int; affected int[];
 BEGIN
     -- lock the donor's shelf units first: a concurrent allocate() either finishes (and its reservation is seen below)
     -- or skips them (SKIP LOCKED), so no reservation can survive on a Quarantined unit
@@ -321,24 +307,54 @@ BEGIN
       AND unit_id IN (SELECT unit_id FROM v_blood_unit WHERE donor_id = p_donor AND status = 'Reserved');
     UPDATE blood_unit SET status = 'Quarantined', status_reason = 'Lookback'
     WHERE status IN ('Available','Reserved') AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor);
-    GET DIAGNOSTICS n = ROW_COUNT;
+    GET DIAGNOSTICS quarantined = ROW_COUNT;
     UPDATE donor SET is_flagged = TRUE WHERE user_id = p_donor;
-    FOREACH r IN ARRAY coalesce(affected, '{}') LOOP PERFORM allocate(r); END LOOP;
-    RETURN n;
+    FOREACH r IN ARRAY coalesce(affected, '{}') LOOP CALL allocate(r, got); END LOOP;
 END $$;
 
--- FR-07 / US-02 eligibility status shown to donors and staff
+-- FR-07 / BR-05 / UC-05 the eligibility function: status, the date the donor can give again, and the reason.
+-- next_eligible_date already folds in the BR-02 interval and active BR-04 deferrals (recompute_next_eligible); a failed
+-- screening shows up as the deferral it created, so the donor is Eligible again when it ends (Scenario 2). UC-05 2a: an
+-- otherwise eligible donor with no screening on record is asked to complete one. LANGUAGE sql so the planner inlines it.
+CREATE FUNCTION donor_eligibility(p_donor int, p_on date DEFAULT CURRENT_DATE)
+RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE AS $$
+    -- tables are schema-qualified instead of SET search_path, which would stop the planner inlining this function
+    SELECT CASE WHEN NOT a.is_active THEN 'Account inactive'
+                WHEN o.next_eligible_date = 'infinity' THEN 'Permanently deferred'    -- UC-06 2a: shown before the flag
+                WHEN o.is_flagged THEN 'Not eligible (flagged after a failed test)'
+                WHEN o.weight_kg < r.min_weight_kg THEN format('Not eligible (under %s kg)', trim_scale(r.min_weight_kg))
+                WHEN w.from_date > p_on THEN 'Not eligible until ' || w.from_date
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
+                    THEN 'Complete screening to confirm eligibility'
+                ELSE 'Eligible' END,
+           CASE WHEN a.is_active AND NOT o.is_flagged AND o.next_eligible_date IS DISTINCT FROM 'infinity'
+                     AND o.weight_kg >= r.min_weight_kg AND w.from_date > p_on THEN w.from_date END,
+           CASE WHEN NOT a.is_active THEN 'The account is deactivated'
+                WHEN o.next_eligible_date = 'infinity' THEN
+                    (SELECT dr.description FROM vytal.deferral d JOIN vytal.deferral_reason dr USING (reason_code)
+                     WHERE d.donor_id = o.user_id AND d.end_date IS NULL ORDER BY d.deferral_id DESC LIMIT 1)
+                WHEN o.is_flagged THEN 'A test on an earlier donation was positive'
+                WHEN o.weight_kg < r.min_weight_kg THEN format('Donors must weigh at least %s kg', trim_scale(r.min_weight_kg))
+                WHEN w.from_date > p_on THEN coalesce(
+                    (SELECT dr.description FROM vytal.deferral d JOIN vytal.deferral_reason dr USING (reason_code)
+                     WHERE d.donor_id = o.user_id AND d.end_date = w.from_date ORDER BY d.deferral_id DESC LIMIT 1),
+                    CASE WHEN w.age_date = w.from_date THEN format('Donors must be at least %s', r.min_age_years)
+                         ELSE 'Minimum interval since the last donation' END)
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
+                    THEN 'No pre-donation screening on record'
+           END
+    FROM vytal.donor o JOIN vytal.user_account a USING (user_id) JOIN vytal.eligibility_rule r USING (sex)
+    CROSS JOIN LATERAL (SELECT (o.date_of_birth + make_interval(years => r.min_age_years))::date AS age_date,
+                               greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date)
+                               AS from_date) w
+    WHERE o.user_id = p_donor
+$$;
+
+-- FR-07 / US-02 eligibility shown to donors and staff: one row per donor, read from donor_eligibility()
 CREATE VIEW v_donor_eligibility AS
 SELECT o.user_id, o.donor_code, o.blood_group, o.next_eligible_date, o.verified_by IS NOT NULL AS group_verified,
-       CASE WHEN NOT a.is_active THEN 'Account inactive'
-            WHEN o.is_flagged THEN 'Not eligible (flagged after a failed test)'
-            WHEN o.next_eligible_date = 'infinity' THEN 'Permanently deferred'
-            WHEN o.weight_kg < r.min_weight_kg THEN format('Not eligible (under %s kg)', trim_scale(r.min_weight_kg))
-            WHEN greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date) > CURRENT_DATE
-                THEN 'Not eligible until ' ||
-                     greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date)
-            ELSE 'Eligible' END AS status
-FROM donor o JOIN user_account a USING (user_id) JOIN eligibility_rule r USING (sex);
+       e.status, e.eligible_from, e.reason
+FROM donor o CROSS JOIN LATERAL donor_eligibility(o.user_id) e;
 
 -- FR-25 eligible, compatible, group-verified donors for a request (code, group, eligibility only; no contact details)
 CREATE FUNCTION eligible_donors(p_request int)

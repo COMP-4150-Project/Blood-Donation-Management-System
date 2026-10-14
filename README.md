@@ -19,9 +19,10 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 |---|---|
 | `setup.sh` | Builds the database from scratch (`./setup.sh`, or `./setup.sh --no-data` for an empty schema) |
 | `sql/01_schema.sql` | Tables, keys and constraints (generated from the Step 3 design) |
-| `sql/02_logic.sql` | Triggers, views and core procedures (eligibility, unit lifecycle, alerts, allocation, lookback, audit) |
+| `sql/02_logic.sql` | Triggers, views, the eligibility function and core procedures (unit lifecycle, alerts, allocation, lookback, audit) |
 | `sql/03_procedures.sql` | Use-case routines: registration, screening, deferrals, donations, testing, discards, thresholds, donation calls, account and facility management, login lockout, the nightly expiry procedure |
-| `sql/04_indexes.sql` | Performance indexes |
+| `sql/03_sessions.sql` | SE-06 sessions: hashed tokens and idle timeouts |
+| `sql/04_indexes.sql` | Performance indexes, each backed by `bench/index_ablation.md` |
 | `sql/05_reference_data.sql` | Blood groups, compatibility, shelf lives, donation intervals, deferral reasons |
 | `sql/06_security.sql` | Application and reporting roles (least privilege, with passwords) |
 | `sql/07_sample_data.sql` | Hand-written sample data for every table |
@@ -29,9 +30,8 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `demo.py` | Replays Step 2 Scenario 1 (emergency trauma request) through the backend |
 | `vytal/` | Python backend (password hashing, sessions, operations used by the GUI) |
 | `tests/` | pytest suite (unit, integration, concurrency, security, data integrity) |
-| `bench/` | Performance benchmark and its bulk-data generator |
+| `bench/` | Performance benchmark (`bench.py`), per-index evidence (`index_ablation.py`) and the bulk-data generator |
 | `ops/` | Runnable nightly expiry and backup scripts, with a crontab example |
-| `report/` | Script that builds the Step 4 report |
 
 ---
 
@@ -150,10 +150,11 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **213 passed, 3 skipped** (216 tests in total).
+Expected: **248 passed** (all tests run; nothing is skipped).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
-- The 3 skipped tests in `tests/test_schema.py` compare the schema with the Step 3 design sources, which are not in this repository. This is expected.
+
+**Sessions (SE-06).** `vytal.services.sign_in()` checks the password and opens a server-side session: the caller gets a random token and the database keeps only its SHA-256 hash in `user_session`. Every request calls `session_user(token)`, which refreshes the idle window or refuses the token once it has lapsed; `sign_out(token)` ends it at once. The timeouts (15 minutes for staff and Admins, 30 for donors) live in one place, `session_timeout()` in `sql/03_sessions.sql`. `tests/test_sessions.py` is the session test.
 
 ---
 
@@ -163,13 +164,13 @@ Expected: **213 passed, 3 skipped** (216 tests in total).
 python demo.py
 ```
 
-This builds a separate `vytal_demo` database and replays Scenario 1 from the Step 2 specification through the `vytal/` package: login, an Emergency request with an unknown group, a shortfall and low-stock alert, a donor search and call, then the lab confirming A+ and the last unit being reserved. It uses the same superuser connection as `setup.sh` and never touches your `vytal` database.
+This builds a separate `vytal_demo` database and replays Scenario 1 from the Step 2 specification through the `vytal/` package: Maya's Emergency request TR-2291 for 4 red cell units with an unknown group reserves the only 3 O- units (shortfall 1), O- stock falls to 0 below its threshold of 6 and an alert opens, the donor search finds 14 eligible O- donors and Maya calls them all, the lab confirms A+ so the last unit comes from A+ stock, two donors accept, and the request is fulfilled. Each step checks the scenario's numbers and stops with an error if one differs. It uses the same superuser connection as `setup.sh` and never touches your `vytal` database.
 
 ---
 
 ## Stored procedures, nightly job and backups
 
-Scheduled jobs are stored procedures (`CREATE PROCEDURE`, run with `CALL`). Operations that return a value to the caller are functions (`CREATE FUNCTION`, run with `SELECT`), for example `allocate()` returns the number of units it reserved.
+Every command that changes data is a stored procedure (`CREATE PROCEDURE`, run with `CALL`); results come back through `INOUT` parameters, for example `CALL vytal.allocate(23, NULL)` returns the number of units it reserved. Functions (`CREATE FUNCTION`, run with `SELECT`) are kept for triggers, read-only calculations used inside queries such as `donor_eligibility()` and `eligible_donors()`, and small helpers.
 
 `run_nightly_expiry()` is the nightly expiry job (FR-20): `CALL vytal.run_nightly_expiry();` expires every unit past its date and returns how many. The `ops/` folder makes the scheduled jobs runnable:
 
@@ -200,8 +201,11 @@ Measures query and procedure times with and without the indexes on the full-size
 createdb vytal_bench
 PGDATABASE=vytal_bench ./setup.sh --no-data
 PGDATABASE=vytal_bench python bench/bulk_data.py --donors 10000 --days 1460 --regular .60 --churn .04
-PGDATABASE=vytal_bench python bench/bench.py      # writes bench/results.md
+PGDATABASE=vytal_bench python bench/bench.py --out /tmp/vytal_bench_results      # leave out --out to overwrite bench/results.*
+PGDATABASE=vytal_bench python bench/index_ablation.py                            # per-index evidence, writes bench/index_ablation.*
 ```
+
+The benchmark needs the full-size data above; a smaller run does not have enough stock for the PR-02 allocation it times.
 
 ---
 
