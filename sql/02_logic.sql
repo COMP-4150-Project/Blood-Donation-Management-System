@@ -235,13 +235,15 @@ CREATE TRIGGER threshold_alert AFTER INSERT OR UPDATE OF min_units ON stock_thre
     FOR EACH ROW EXECUTE FUNCTION trg_threshold_alert();
 
 -- ---------------------------------------------------------------- FR-23 FEFO allocation with O-negative conservation, DI-01
+-- Staff allocate for their own facility's requests; an Admin's quarantine re-allocates the requests it took units from (UC-22 3a).
 CREATE PROCEDURE allocate(p_request int, INOUT reserved_count int DEFAULT NULL) LANGUAGE plpgsql AS $$
-DECLARE r blood_request%ROWTYPE; need int; u record; fac int;
+DECLARE r blood_request%ROWTYPE; need int; u record; fac int; actor int := require_actor('{Staff,Admin}');
 BEGIN
     reserved_count := 0;
     SELECT * INTO r FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF r.status IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
     SELECT facility_id INTO fac FROM staff WHERE user_id = r.requested_by;
+    PERFORM require_own_facility(actor, fac, format('request %s', p_request));
     SELECT shortfall INTO need FROM v_request_status WHERE request_id = p_request;
     FOR u IN
         SELECT b.unit_id, dn.blood_group FROM blood_unit b JOIN donation dn USING (donation_id)
@@ -250,8 +252,9 @@ BEGIN
           AND (   (r.recipient_group IS NOT NULL AND EXISTS (SELECT 1 FROM compatibility c
                      WHERE c.component_code = r.component_code AND c.recipient_group = r.recipient_group
                        AND c.donor_group = dn.blood_group))
-               -- unknown group: only donor groups compatible with every recipient group (O- red cells, AB plasma)
-               OR (r.recipient_group IS NULL AND (SELECT count(*) FROM compatibility c
+               -- BR-14: an unknown group is treated as O- red cells / AB plasma only for an Emergency; any other unknown-group
+               -- request reserves nothing until the lab confirms the group (confirm_request_group), so O- is kept (BR-09)
+               OR (r.recipient_group IS NULL AND r.urgency = 'Emergency' AND (SELECT count(*) FROM compatibility c
                      WHERE c.component_code = r.component_code AND c.donor_group = dn.blood_group) = 8))
           -- O- red cells go to other groups in an Emergency, or only for what other compatible stock cannot cover
           AND (dn.blood_group <> 'O-' OR r.recipient_group = 'O-' OR r.recipient_group IS NULL
@@ -275,10 +278,11 @@ END $$;
 CREATE PROCEDURE close_request(p_request int, p_cancel boolean DEFAULT FALSE, p_units text[] DEFAULT NULL,
                                INOUT final_status text DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE issued int; req int; st text; stray text;
+DECLARE issued int; req int; st text; stray text; actor int := require_actor('{Staff}');
 BEGIN
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF st IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
+    PERFORM require_own_facility(actor, (SELECT facility_id FROM v_request WHERE request_id = p_request), format('request %s', p_request));
     IF NOT p_cancel THEN
         -- a reservation that expired before issue is released (Reserved -> Available) and the unit expires (Available -> Expired)
         UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL
@@ -316,6 +320,7 @@ END $$;
 CREATE PROCEDURE quarantine_donor(p_donor int, INOUT quarantined int DEFAULT NULL) LANGUAGE plpgsql AS $$
 DECLARE r int; got int; affected int[];
 BEGIN
+    PERFORM require_actor('{Admin}');                -- UC-22: the Admin runs the lookback
     -- lock the donor's shelf units first: a concurrent allocate() either finishes (and its reservation is seen below)
     -- or skips them (SKIP LOCKED), so no reservation can survive on a Quarantined unit
     PERFORM 1 FROM blood_unit b JOIN donation d USING (donation_id)

@@ -37,13 +37,26 @@ BEGIN
     END LOOP;
 END $$;
 
--- application: reads tables and never writes them; every change goes through a procedure (CALL), which checks the acting
--- user's role and session itself. Internal helpers and trigger functions are not callable.
+-- application: reads tables and never writes them; every change goes through a procedure (CALL). Each procedure checks in
+-- the database that the acting user (vytal.user_id, stamped by the backend after login) is active, holds the right role
+-- and, for staff, works at the facility the record belongs to. Internal helpers and trigger functions are not callable.
 GRANT USAGE ON SCHEMA vytal TO vytal_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA vytal TO vytal_app;
 GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA vytal TO vytal_app;
+REVOKE EXECUTE ON PROCEDURE release_tested(int, int) FROM vytal_app;      -- internal step of separate_donation / record_tests
 GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int), donors_for_group(text, text) TO vytal_app;
--- SE-06: token hashes are never readable
+-- SE-07 minimum disclosure: no password hashes or lockout counters, contact details, screening answers, audit values or
+-- token hashes by SELECT. The screens that need them read them through these scoped functions (03_procedures.sql).
+REVOKE SELECT ON user_account FROM vytal_app;
+GRANT SELECT (user_id, first_name, last_name, role, is_active, created_by, created_at) ON user_account TO vytal_app;
+REVOKE SELECT ON donor FROM vytal_app;
+GRANT SELECT (user_id, donor_code, date_of_birth, sex, weight_kg, blood_group, verified_by, verified_at, is_flagged,
+              next_eligible_date) ON donor TO vytal_app;
+REVOKE SELECT ON screening_answer FROM vytal_app;
+REVOKE SELECT ON audit_log FROM vytal_app;
+GRANT SELECT (audit_id, user_id, action, table_name, record_id, field_name, changed_at) ON audit_log TO vytal_app;
+GRANT EXECUTE ON FUNCTION login_lookup(text), my_profile(), screening_answers(int),
+                          audit_entries(int, text, text, timestamptz, timestamptz, int) TO vytal_app;
 REVOKE SELECT ON user_session FROM vytal_app;
 GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_app;
 

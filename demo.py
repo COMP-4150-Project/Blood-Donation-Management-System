@@ -103,7 +103,7 @@ def main():
     found = svc.find_donors(maya, rid)
     check("eligible donors found", len(found), 14)
     check("their groups", sorted({g for _, g, _ in found}), ["O-"])
-    call_id = svc.call_donors(maya, rid, "O-negative donors are needed today. Please book a donation.")
+    call_id = svc.call_donors(maya, rid, preferred_date=dt.date.today() + dt.timedelta(days=1))
     check("donors called", scalar("SELECT count(*) FROM call_recipient WHERE call_id = %s", (call_id,)), 14)
 
     say("Step 6: the lab confirms A-positive; the last unit comes from A+ stock, so O- is kept for other emergencies (BR-09).")

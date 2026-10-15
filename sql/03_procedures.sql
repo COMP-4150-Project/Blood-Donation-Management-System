@@ -3,7 +3,9 @@ SET search_path = vytal;
 -- Routine kinds. Every command the application or a job runs to change data is a PROCEDURE, run with CALL; any result it
 -- hands back (a new id, a status) comes back in INOUT parameters as one row. FUNCTIONS are kept for what a procedure
 -- cannot be: trigger functions, read-only calculations used inside queries (donor_eligibility, eligible_donors), and
--- small internal helpers used in expressions (require_role, require_session_user, recompute_next_eligible, refresh_alert).
+-- small internal helpers used in expressions (require_role, require_session_user, require_actor, recompute_next_eligible,
+-- refresh_alert). A few read-only SECURITY DEFINER functions hand the application the protected columns one screen needs
+-- (login_lookup, my_profile, screening_answers, audit_entries; SE-07, at the end of this file).
 -- separate_donation returns its new unit ids as an array, so it is a procedure like the other commands.
 -- 06_security.sql makes every procedure SECURITY DEFINER (owner vytal_owner, search_path pinned): the application role
 -- cannot write any table itself, so procedures are the only way it changes data (SE-04).
@@ -40,6 +42,28 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM user_account WHERE user_id = p_user AND role = p_role AND is_active) THEN
         RAISE EXCEPTION '% access only', p_role;
     END IF;
+END $$;
+
+-- ---------------------------------------------------------------- SE-02 procedures that take no user id act for the session's user
+-- Returns the acting user (vytal.user_id), who must be active and hold one of the roles. A session with no acting user is
+-- refused; only a superuser maintenance session (setup, sample data) passes without one.
+CREATE FUNCTION require_actor(p_roles text[]) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE actor int := nullif(current_setting('vytal.user_id', true), '')::int;
+BEGIN
+    IF caller_is_superuser() THEN RETURN actor; END IF;
+    IF actor IS NULL THEN RAISE EXCEPTION 'no acting user in this session'; END IF;
+    IF NOT EXISTS (SELECT 1 FROM user_account WHERE user_id = actor AND is_active AND role = ANY (p_roles)) THEN
+        RAISE EXCEPTION '% access only', array_to_string(p_roles, ' or ');
+    END IF;
+    RETURN actor;
+END $$;
+
+-- SE-02 a staff member works only on their own facility's records; Admins and superuser maintenance sessions pass
+CREATE FUNCTION require_own_facility(p_actor int, p_facility int, p_what text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE fac int := (SELECT facility_id FROM staff WHERE user_id = p_actor);
+BEGIN
+    IF caller_is_superuser() OR fac IS NULL THEN RETURN; END IF;
+    IF p_facility IS DISTINCT FROM fac THEN RAISE EXCEPTION '% belongs to another facility', p_what; END IF;
 END $$;
 
 -- ---------------------------------------------------------------- FR-01 donor self-registration (supertype + subtype in one transaction)
@@ -97,11 +121,10 @@ END $$;
 -- p_answers maps question_id -> answer, e.g. '{"1": true, "2": true}'. Every active question must be answered.
 CREATE PROCEDURE submit_screening(p_donor int, p_answers jsonb, INOUT new_screening_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE sid int; missing int; actor int := nullif(current_setting('vytal.user_id', true), '')::int;
+DECLARE sid int; missing int; actor int := require_actor('{Donor,Staff}');
 BEGIN
     -- UC-04: the donor answers for themselves, or staff enter the answers at the clinic
-    IF actor IS DISTINCT FROM p_donor AND NOT caller_is_superuser()
-       AND NOT EXISTS (SELECT 1 FROM staff s JOIN user_account a USING (user_id) WHERE s.user_id = actor AND a.is_active) THEN
+    IF actor IS DISTINCT FROM p_donor AND NOT caller_is_superuser() AND NOT EXISTS (SELECT 1 FROM staff WHERE user_id = actor) THEN
         RAISE EXCEPTION 'screening is entered by the donor or by staff';
     END IF;
     IF (SELECT next_eligible_date FROM donor WHERE user_id = p_donor) = 'infinity' THEN     -- UC-04 precondition
@@ -125,6 +148,7 @@ CREATE PROCEDURE record_donation(p_donor int, p_staff int, p_type text, p_volume
                                  INOUT new_donation_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
 BEGIN
+    PERFORM require_role(p_staff, 'Staff');          -- the session's own staff member records it at their facility
     new_donation_id := NULL;
     IF p_hemoglobin < (SELECT r.min_hemoglobin_gl FROM donor o JOIN eligibility_rule r USING (sex) WHERE o.user_id = p_donor) THEN
         INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by)
@@ -139,8 +163,9 @@ END $$;
 -- Hands back the new unit ids in the order the components were given.
 CREATE PROCEDURE separate_donation(p_donation int, p_components text[], INOUT unit_ids varchar[] DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE pending int;
+DECLARE pending int; actor int := require_actor('{Staff}');
 BEGIN
+    PERFORM require_own_facility(actor, donation_facility(p_donation), format('donation %s', p_donation));
     IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN
         RAISE EXCEPTION 'donation % was discarded', p_donation; END IF;
     WITH made AS (
@@ -152,7 +177,8 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------- FR-13 release a donation's units once every active test is negative
--- Hands back the number of active tests still missing (0 = released or nothing to release).
+-- Hands back the number of active tests still missing (0 = released or nothing to release). Internal: only
+-- separate_donation and record_tests call it, so the application role cannot (06_security.sql).
 CREATE PROCEDURE release_tested(p_donation int, INOUT pending_tests int DEFAULT NULL) LANGUAGE plpgsql AS $$
 BEGIN
     SELECT count(*) INTO pending_tests FROM test_type t
@@ -164,8 +190,9 @@ END $$;
 
 -- p_results maps test_code -> 'Negative' | 'Positive'. A positive result fires on_positive_test (discard + flag).
 CREATE PROCEDURE record_tests(p_donation int, p_results jsonb, INOUT outcome text DEFAULT NULL) LANGUAGE plpgsql AS $$
-DECLARE pending int;
+DECLARE pending int; actor int := require_actor('{Staff}');
 BEGIN
+    PERFORM require_own_facility(actor, donation_facility(p_donation), format('donation %s', p_donation));
     INSERT INTO test_result (donation_id, test_code, result)
     SELECT p_donation, key, value FROM jsonb_each_text(p_results);
     IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN outcome := 'Discarded'; RETURN; END IF;
@@ -220,23 +247,44 @@ END $$;
 
 -- ---------------------------------------------------------------- FR-26 donation call to eligible, compatible donors only
 -- p_donor_codes NULL = call every match from eligible_donors(); otherwise only the listed codes that match.
-CREATE PROCEDURE send_donation_call(p_request int, p_staff int, p_message text, p_donor_codes text[] DEFAULT NULL,
+-- SE-07: calls contain no health information, so staff cannot type the message; it is built from a fixed template that
+-- names only the facility, its address, the component and an optional preferred date.
+CREATE PROCEDURE send_donation_call(p_request int, p_staff int, p_donor_codes text[] DEFAULT NULL, p_preferred date DEFAULT NULL,
                                     INOUT new_call_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE cid int; n int;
+DECLARE cid int; n int; msg text;
 BEGIN
+    PERFORM require_role(p_staff, 'Staff');
+    PERFORM require_own_facility(p_staff, (SELECT facility_id FROM v_request WHERE request_id = p_request),
+                                 format('request %s', p_request));
     IF (SELECT status FROM blood_request WHERE request_id = p_request) IS DISTINCT FROM 'Open' THEN
         RAISE EXCEPTION 'request % is not open', p_request; END IF;
-    INSERT INTO donation_call (request_id, sent_by, message) VALUES (p_request, p_staff, p_message) RETURNING call_id INTO cid;
+    msg := call_message(p_request, p_preferred);
+    INSERT INTO donation_call (request_id, sent_by, message) VALUES (p_request, p_staff, msg) RETURNING call_id INTO cid;
     INSERT INTO call_recipient (call_id, donor_id)
     SELECT cid, o.user_id FROM eligible_donors(p_request) e JOIN donor o USING (donor_code)
     WHERE p_donor_codes IS NULL OR e.donor_code = ANY (p_donor_codes);
     GET DIAGNOSTICS n = ROW_COUNT;
     IF n = 0 THEN RAISE EXCEPTION 'no eligible, compatible donor to call for request %', p_request; END IF;
     INSERT INTO notification (user_id, message)
-    SELECT donor_id, p_message FROM call_recipient WHERE call_id = cid;
+    SELECT donor_id, msg FROM call_recipient WHERE call_id = cid;
     new_call_id := cid;
 END $$;
+
+-- the facility that collected a donation (where its record was made)
+CREATE FUNCTION donation_facility(p_donation int) RETURNS int LANGUAGE sql STABLE AS $$
+    SELECT s.facility_id FROM vytal.donation d JOIN vytal.staff s ON s.user_id = d.recorded_by WHERE d.donation_id = p_donation
+$$;
+
+-- SE-07 the only text a donation call can carry
+CREATE FUNCTION call_message(p_request int, p_preferred date DEFAULT NULL) RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT format('%s is asking for donors to give %s. Please book a donation at %s%s. Accept or decline this call in Vytal.',
+                  f.name, lower(ct.name), f.address,
+                  CASE WHEN p_preferred IS NOT NULL THEN ' on or before ' || to_char(p_preferred, 'FMDD Mon YYYY') ELSE '' END)
+    FROM vytal.blood_request r JOIN vytal.staff s ON s.user_id = r.requested_by JOIN vytal.facility f USING (facility_id)
+    JOIN vytal.component_type ct ON ct.component_code = r.component_code
+    WHERE r.request_id = p_request
+$$;
 
 -- ---------------------------------------------------------------- FR-27 / UC-20 a donor answers a call once
 -- Hands back the facility's name, address and phone on accept, 'declined', or 'closed' when the request no longer needs donors (2a).
@@ -412,4 +460,104 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM notification WHERE notification_id = p_notification AND user_id = p_user) THEN
         RAISE EXCEPTION 'notification % not found', p_notification; END IF;
     UPDATE notification SET read_at = now() WHERE notification_id = p_notification AND read_at IS NULL;
+END $$;
+
+-- ---------------------------------------------------------------- UC-22 the lookback investigation is cleared (Table 1 Quarantined -> Available)
+-- Refused while the donor has a permanent deferral or a positive test on record: then the confirmed path applies and an
+-- Admin discards the units (discard_unit). Units already past their date go back through Available to Expired, the only
+-- route Table 1 allows. Hands back how many units are back on the shelf; the flag is cleared so the donor can give again.
+CREATE PROCEDURE clear_lookback(p_admin int, p_donor int, p_note text, INOUT released int DEFAULT NULL) LANGUAGE plpgsql AS $$
+DECLARE why text := 'Lookback cleared: ' || coalesce(nullif(trim(p_note), ''), 'no risk found');
+        expired int;
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    IF NOT EXISTS (SELECT 1 FROM donor WHERE user_id = p_donor) THEN RAISE EXCEPTION 'donor % not found', p_donor; END IF;
+    IF EXISTS (SELECT 1 FROM deferral WHERE donor_id = p_donor AND end_date IS NULL) THEN
+        RAISE EXCEPTION 'donor % has a permanent deferral: discard the quarantined units instead', p_donor; END IF;
+    IF EXISTS (SELECT 1 FROM test_result t JOIN donation d USING (donation_id) WHERE d.donor_id = p_donor AND t.result = 'Positive') THEN
+        RAISE EXCEPTION 'donor % has a positive test on record: discard the quarantined units instead', p_donor; END IF;
+    UPDATE blood_unit SET status = 'Available', status_reason = why
+    WHERE status = 'Quarantined' AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor);
+    GET DIAGNOSTICS released = ROW_COUNT;
+    UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired during the lookback'
+    WHERE status = 'Available' AND status_reason = why AND expires_at <= now()
+      AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor);
+    GET DIAGNOSTICS expired = ROW_COUNT;
+    released := released - expired;
+    UPDATE donor SET is_flagged = FALSE WHERE user_id = p_donor;
+END $$;
+
+-- ---------------------------------------------------------------- UC-01 2a a user changes their own password; an Admin resets one
+-- Only bcrypt hashes are accepted (SE-01: never plain text). Either change ends the user's open sessions (SE-06); a reset
+-- also clears a lockout (SE-05).
+CREATE FUNCTION require_bcrypt(p_hash text) RETURNS void LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    IF p_hash IS NULL OR p_hash !~ '^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$' THEN
+        RAISE EXCEPTION 'a password must be stored as a bcrypt hash'; END IF;
+END $$;
+
+CREATE PROCEDURE set_password(p_user int, p_hash text) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_session_user(p_user);
+    PERFORM require_bcrypt(p_hash);
+    UPDATE user_account SET password_hash = p_hash WHERE user_id = p_user AND is_active;
+    IF NOT FOUND THEN RAISE EXCEPTION 'account % not found or inactive', p_user; END IF;
+    UPDATE user_session SET ended_at = now() WHERE user_id = p_user AND ended_at IS NULL;
+END $$;
+
+CREATE PROCEDURE admin_reset_password(p_admin int, p_user int, p_hash text) LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    PERFORM require_bcrypt(p_hash);
+    UPDATE user_account SET password_hash = p_hash, failed_logins = 0, locked_until = NULL WHERE user_id = p_user;
+    IF NOT FOUND THEN RAISE EXCEPTION 'user % not found', p_user; END IF;
+    UPDATE user_session SET ended_at = now() WHERE user_id = p_user AND ended_at IS NULL;
+END $$;
+
+-- ---------------------------------------------------------------- SE-07 minimum disclosure for the application role
+-- vytal_app cannot SELECT password hashes, lockout counters, email, phone, address, screening answers or audit values
+-- (06_security.sql). These read-only SECURITY DEFINER functions hand out exactly what one screen needs, and no more.
+
+-- SE-01 / SE-05 login: the one place a password hash leaves the database, for the backend's bcrypt check. It answers for
+-- one email at a time, so the hashes cannot be listed.
+CREATE FUNCTION login_lookup(p_email text) RETURNS TABLE (user_id int, role varchar, password_hash varchar)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
+    SELECT a.user_id, a.role, a.password_hash FROM user_account a WHERE a.email = lower(p_email)
+$$;
+
+-- UC-03 the acting user's own profile, contact details included; nobody else's
+CREATE FUNCTION my_profile() RETURNS TABLE (user_id int, email varchar, phone varchar, first_name varchar, last_name varchar,
+                                            role varchar, address varchar, date_of_birth date, weight_kg numeric)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
+    SELECT a.user_id, a.email, a.phone, a.first_name, a.last_name, a.role, o.address, o.date_of_birth, o.weight_kg
+    FROM user_account a LEFT JOIN donor o ON o.user_id = a.user_id
+    WHERE a.user_id = nullif(current_setting('vytal.user_id', true), '')::int
+$$;
+
+-- UC-04 screening answers: to the donor who gave them, or to active staff entering or reviewing them at the clinic
+CREATE FUNCTION screening_answers(p_screening int) RETURNS TABLE (question_id int, question_text varchar, answer boolean)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
+#variable_conflict use_column
+DECLARE actor int := nullif(current_setting('vytal.user_id', true), '')::int;
+BEGIN
+    IF NOT caller_is_superuser()
+       AND NOT EXISTS (SELECT 1 FROM screening s WHERE s.screening_id = p_screening AND s.donor_id = actor)
+       AND NOT EXISTS (SELECT 1 FROM staff st JOIN user_account a ON a.user_id = st.user_id WHERE st.user_id = actor AND a.is_active) THEN
+        RAISE EXCEPTION 'screening answers are shown only to the donor and to clinic staff'; END IF;
+    RETURN QUERY SELECT q.question_id, q.question_text, sa.answer
+    FROM screening_answer sa JOIN screening_question q ON q.question_id = sa.question_id
+    WHERE sa.screening_id = p_screening ORDER BY q.question_id;
+END $$;
+
+-- UC-25 the audit trail with its old and new values, for an Admin only (values can hold contact details)
+CREATE FUNCTION audit_entries(p_user int DEFAULT NULL, p_table text DEFAULT NULL, p_record text DEFAULT NULL,
+                              p_since timestamptz DEFAULT NULL, p_until timestamptz DEFAULT NULL, p_limit int DEFAULT 500)
+RETURNS SETOF audit_log LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
+BEGIN
+    PERFORM require_actor('{Admin}');
+    RETURN QUERY SELECT * FROM audit_log a
+    WHERE (p_user IS NULL OR a.user_id = p_user) AND (p_table IS NULL OR a.table_name = p_table)
+      AND (p_record IS NULL OR a.record_id = p_record) AND (p_since IS NULL OR a.changed_at >= p_since)
+      AND (p_until IS NULL OR a.changed_at < p_until)
+    ORDER BY a.changed_at, a.audit_id LIMIT p_limit;
 END $$;

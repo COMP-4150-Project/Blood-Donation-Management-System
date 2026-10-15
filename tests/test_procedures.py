@@ -334,7 +334,8 @@ COMMANDS = ["allocate", "close_request", "quarantine_donor", "run_nightly_expiry
             "record_tests", "send_donation_call", "respond_to_call", "record_deferral", "discard_unit", "set_threshold",
             "set_account_active", "set_facility_active", "save_facility", "update_donor_profile",
             "verify_blood_group", "submit_request", "confirm_request_group", "set_compatibility", "set_shelf_life",
-            "set_donation_interval", "save_deferral_reason", "set_eligibility_rule", "mark_notification_read"]
+            "set_donation_interval", "save_deferral_reason", "set_eligibility_rule", "mark_notification_read",
+            "clear_lookback", "set_password", "admin_reset_password"]
 
 
 def test_commands_are_procedures_and_calculations_are_functions(db):
@@ -349,7 +350,7 @@ def test_commands_are_procedures_and_calculations_are_functions(db):
 def test_call_reaches_only_eligible_compatible_donors(db):
     good, bad, unscreened = db.donor("O-", screened=True), db.donor("B+", screened=True), db.donor("O-")
     r = db.request("O-")
-    call = db.one("CALL send_donation_call(%s,%s,'O-negative donors needed')", (r, db.nurse))
+    call = db.one("CALL send_donation_call(%s,%s)", (r, db.nurse))
     assert [d for (d,) in db.q("SELECT donor_id FROM call_recipient WHERE call_id=%s", (call,))] == [good]
     assert db.one("SELECT count(*) FROM notification WHERE user_id=%s", (bad,)) == 0
     assert db.one("SELECT count(*) FROM notification WHERE user_id=%s", (unscreened,)) == 0
@@ -359,7 +360,7 @@ def test_call_reaches_only_eligible_compatible_donors(db):
 def test_call_with_no_match_is_refused_and_leaves_nothing_behind(db):
     db.donor("A+")
     r = db.request("O-")
-    assert "no eligible" in db.fails("CALL send_donation_call(%s,%s,'x')", (r, db.nurse))
+    assert "no eligible" in db.fails("CALL send_donation_call(%s,%s)", (r, db.nurse))
     assert db.one("SELECT count(*) FROM donation_call") == 0
 
 
@@ -367,12 +368,12 @@ def test_no_call_for_a_closed_request(db):
     db.donor("O-")
     r = db.request("O-")
     db.q("CALL close_request(%s, TRUE)", (r,))
-    assert "not open" in db.fails("CALL send_donation_call(%s,%s,'x')", (r, db.nurse))
+    assert "not open" in db.fails("CALL send_donation_call(%s,%s)", (r, db.nurse))
 
 
 def test_donor_answers_once(db):
     d = db.donor("O-", screened=True)
-    call = db.one("CALL send_donation_call(%s,%s,'x')", (db.request("O-"), db.nurse))
+    call = db.one("CALL send_donation_call(%s,%s)", (db.request("O-"), db.nurse))
     db.q("CALL respond_to_call(%s,%s,TRUE)", (call, d))
     assert db.one("SELECT response FROM call_recipient WHERE call_id=%s", (call,)) == "Accepted"
     assert "no pending call" in db.fails("CALL respond_to_call(%s,%s,FALSE)", (call, d))
@@ -541,7 +542,7 @@ def test_call_responses_accept_decline_and_closed(db):
     db.q("UPDATE facility SET phone = '519-555-0111' WHERE facility_id=%s", (db.fac_h,))
     yes, no, late = (db.donor("O-", screened=True) for _ in range(3))
     r = db.request("O-")
-    call = db.one("CALL send_donation_call(%s,%s,'x')", (r, db.nurse))
+    call = db.one("CALL send_donation_call(%s,%s)", (r, db.nurse))
     assert db.one("CALL respond_to_call(%s,%s,TRUE)", (call, yes)) == "Riverside General, 1 River Rd, 519-555-0111"
     assert db.one("CALL respond_to_call(%s,%s,FALSE)", (call, no)) == "declined"
     db.q("CALL close_request(%s, TRUE)", (r,))
@@ -670,3 +671,68 @@ def test_manual_search_finds_eligible_compatible_verified_donors(db):
     code = lambda u: db.one("SELECT donor_code FROM donor WHERE user_id=%s", (u,))
     assert {code(o_neg), code(a_pos)} <= codes and not {code(b_pos), code(unscreened)} & codes
     assert code(b_pos) not in {c for c, _, _ in db.q("SELECT * FROM donors_for_group('A+','PLASMA')")}
+
+
+# ---------------------------------------------------------------------- BR-14 / BR-09 an unknown group outside an Emergency
+def test_routine_unknown_group_request_takes_no_o_negative(db):
+    """BR-14 covers Emergency requests only: a Routine request with an unknown group reserves nothing, so O- is kept (BR-09)."""
+    oneg = db.stock("O-", n=2)
+    db.stock("A+", n=4)
+    db.stock("O+", n=3)
+    r = db.request(None, n=2, urgency="Routine")
+    assert db.one("CALL allocate(%s)", (r,)) == 0
+    assert db.one("SELECT shortfall FROM v_request_status WHERE request_id = %s", (r,)) == 2
+    assert db.q("SELECT status FROM blood_unit WHERE unit_id = ANY(%s)", (oneg,)) == [("Available",), ("Available",)]
+
+
+def test_emergency_unknown_group_still_gets_o_negative(db):
+    db.stock("O-", n=2)
+    db.stock("A+", n=2)
+    r = db.request(None, n=2, urgency="Emergency")
+    assert db.one("CALL allocate(%s)", (r,)) == 2
+    assert db.groups_of(r) == ["O-", "O-"]
+
+
+def test_confirmed_routine_request_follows_br09(db):
+    db.stock("O-", n=2)
+    db.stock("A+", n=1)
+    r = db.request(None, n=2, urgency="Routine")
+    assert db.one("CALL allocate(%s)", (r,)) == 0
+    reserved, short = db.q("CALL confirm_request_group(%s, %s, 'A+')", (db.nurse, r))[0]
+    assert (reserved, short) == (2, 0)
+    assert db.groups_of(r) == ["A+", "O-"]                 # O- only for what A+ stock could not cover
+
+
+# ---------------------------------------------------------------------- UC-22 investigation cleared
+def _quarantined(db):
+    d = db.donor("A+", screened=True)
+    dn = db.donate(d, days_ago=20)
+    units = db.one("CALL separate_donation(%s, ARRAY['RBC', 'PLASMA'])", (dn,))
+    db.one("CALL record_tests(%s, %s)", (dn, '{"HIV":"Negative","HBV":"Negative","HCV":"Negative","SYPH":"Negative"}'))
+    assert db.one("CALL quarantine_donor(%s)", (d,)) == 2
+    return d, units
+
+
+def test_cleared_lookback_puts_units_back_and_lifts_the_flag(db):
+    d, units = _quarantined(db)
+    db.q("UPDATE blood_unit SET expires_at = now() - interval '1 hour' WHERE unit_id = %s", (units[1],))   # past its date meanwhile
+    assert db.one("CALL clear_lookback(%s, %s, 'travel history checked: no risk')", (db.admin, d)) == 1
+    assert dict(db.q("SELECT unit_id, status FROM blood_unit WHERE unit_id = ANY(%s)", (units,))) == \
+        {units[0]: "Available", units[1]: "Expired"}           # Table 1: Quarantined -> Available (-> Expired)
+    assert db.one("SELECT is_flagged FROM donor WHERE user_id = %s", (d,)) is False
+    assert db.one("SELECT count(*) FROM audit_log WHERE table_name = 'donor' AND record_id = %s AND field_name = 'is_flagged'",
+                  (str(d),)) >= 1
+
+
+def test_cleared_lookback_is_refused_after_a_positive_test_or_permanent_deferral(db):
+    d, _ = _quarantined(db)
+    db.q("CALL record_deferral(%s, %s, 'HIV')", (db.nurse, d))
+    assert "permanent deferral" in db.fails("CALL clear_lookback(%s, %s, 'x')", (db.admin, d))
+    d2 = db.donor("B+", screened=True)
+    dn = db.donate(d2)
+    db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))
+    db.one("CALL record_tests(%s, '{\"HBV\": \"Positive\"}')", (dn,))
+    assert "positive test" in db.fails("CALL clear_lookback(%s, %s, 'x')", (db.admin, d2))
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert "does not match the session" in db.fails("CALL clear_lookback(%s, %s, 'x')", (db.admin, d2))

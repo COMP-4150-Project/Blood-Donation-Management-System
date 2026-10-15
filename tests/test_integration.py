@@ -126,9 +126,11 @@ def test_emergency_shortfall_triggers_a_donation_call(world):
     assert req["shortfall"] == 2
     codes = [c for c, *_ in svc.find_donors(w, req["request_id"])]
     assert svc.donor_home(called)["donor_code"] in codes
-    call = svc.call_donors(w, req["request_id"], "O-negative donors needed today", codes)
+    call = svc.call_donors(w, req["request_id"], codes)
     assert svc.respond_to_call(called, call, True) == "Windsor General, 1 St"            # UC-20: facility details on accept
-    assert (call, "O-negative donors needed today", "Accepted") in svc.donor_home(called)["calls"]
+    msg = "Windsor General is asking for donors to give red blood cells. Please book a donation at 1 St. " \
+          "Accept or decline this call in Vytal."                                          # SE-07 fixed template only
+    assert (call, msg, "Accepted") in svc.donor_home(called)["calls"]
 
 
 def test_confirming_an_unknown_group_reserves_compatible_stock(world):
@@ -457,7 +459,7 @@ def test_staff_search_by_group_see_call_responses_and_open_alerts(world):
     with pytest.raises(svc.AccessDenied):
         svc.search_donors(donor, "O-")
     rid = svc.submit_request(w, "P-910", None, "RBC", 40, "Emergency", within_the_hour())["request_id"]
-    svc.call_donors(w, rid, "O-negative donors needed today.", [code])
+    svc.call_donors(w, rid, [code])
     svc.respond_to_call(donor, svc.donor_home(donor)["calls"][0][0], True)
     assert [(c, r) for c, r, _ in svc.call_responses(w, rid)] == [(code, "Accepted")]
     with pytest.raises(svc.AccessDenied):
@@ -479,3 +481,52 @@ def test_donor_reads_and_marks_notifications(world):
     assert len(svc.list_notifications(donor, unread_only=True)) == 1 and len(svc.list_notifications(donor)) == 2
     with pytest.raises(psycopg.Error, match="not found"):
         svc.mark_read(world["windsor"], unread[1][0])
+
+
+def test_password_change_and_admin_reset_through_the_backend(world):
+    """UC-01 2a: the old password is proved first; an Admin reset clears a lockout; login uses only login_lookup (SE-07)."""
+    d = new_donor("pw@v.ca")
+    with pytest.raises(svc.AccessDenied, match="current password is wrong"):
+        svc.change_password(d, "not-my-password", "brand-new-pass-1")
+    with pytest.raises(svc.InvalidInput, match="password"):
+        svc.change_password(d, PASSWORD, "short")
+    svc.change_password(d, PASSWORD, "brand-new-pass-1")
+    with pytest.raises(svc.AccessDenied):
+        svc.login("pw@v.ca", PASSWORD)
+    assert svc.login("pw@v.ca", "brand-new-pass-1") == (d, "Donor")
+    for _ in range(5):
+        with pytest.raises(svc.AccessDenied):
+            svc.login("pw@v.ca", "wrong-password-x")
+    with pytest.raises(svc.AccessDenied, match="locked"):
+        svc.login("pw@v.ca", "brand-new-pass-1")
+    with pytest.raises(Exception, match="Admin access only"):
+        svc.admin_reset_password(world["windsor"], d, "reset-by-admin-7")
+    svc.admin_reset_password(world["admin"], d, "reset-by-admin-7")
+    assert svc.login("pw@v.ca", "reset-by-admin-7") == (d, "Donor")
+
+
+def test_profile_and_screening_answers_are_scoped(world):
+    """SE-07: contact details and screening answers reach only their owner (and clinic staff for answers)."""
+    d, other = new_donor("prof@v.ca"), new_donor("prof2@v.ca")
+    assert svc.profile(d)["email"] == "prof@v.ca" and svc.profile(d)["address"] == "1 Main St"
+    svc.complete_screening(d, CLEAN)
+    with owner(world) as con:
+        sid = con.execute("SELECT max(screening_id) FROM vytal.screening WHERE donor_id = %s", (d,)).fetchone()[0]
+    assert len(svc.screening_answers(d, sid)) == 6
+    assert len(svc.screening_answers(world["windsor"], sid)) == 6
+    with pytest.raises(Exception, match="only to the donor and to clinic staff"):
+        svc.screening_answers(other, sid)
+
+
+def test_admin_clears_a_lookback_through_the_backend(world):
+    s = world["windsor"]
+    d = new_donor("clear@v.ca", "B+")
+    _, units = donate_and_release(s, d, "B+")
+    rows = svc.quarantine_donor(world["admin"], d)
+    assert {r[4] for r in rows} == {"Quarantined"}                     # lookback rows: (..., unit_id, component, status, ...)
+    with pytest.raises(svc.InvalidInput):
+        svc.clear_lookback(world["admin"], d, " ")
+    with pytest.raises(Exception, match="Admin access only"):
+        svc.clear_lookback(s, d, "cleared")
+    assert svc.clear_lookback(world["admin"], d, "malaria test negative") == len(units)
+    assert svc.donor_home(d)["status"] != "Not eligible (flagged after a failed test)"

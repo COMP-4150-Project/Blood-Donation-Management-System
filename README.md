@@ -108,7 +108,7 @@ foreach ($f in Get-ChildItem sql\0*.sql | Sort-Object Name) { psql -v ON_ERROR_S
 
 No output means it worked. To start over, run `dropdb vytal` and repeat this step.
 
-Least privilege (SE-04): every routine is owned by `vytal_owner`, a non-superuser role that cannot log in, and every procedure runs as that owner (`SECURITY DEFINER`, fixed `search_path`). The application login `vytal_app` can read tables and call procedures, but cannot insert, update or delete any table itself, so every change passes the procedures' role and session checks. The database trusts the acting user that the backend stamps into `vytal.user_id` after login; that is the trust boundary between the web tier and the database.
+Least privilege (SE-04): every routine is owned by `vytal_owner`, a non-superuser role that cannot log in, and every procedure runs as that owner (`SECURITY DEFINER`, fixed `search_path`). The application login `vytal_app` can call procedures but cannot insert, update or delete any table itself. Every procedure checks in the database that the acting user is active, holds the right role and, for staff, works at the facility the record belongs to; a connection with no acting user is refused. The app also cannot read password hashes, lockout counters, contact details, screening answers or audit values (SE-07): login, the user's own profile, screening answers (to the donor or clinic staff) and the audit trail (to an Admin) come through scoped functions. Donation calls use a fixed message template, so they can never carry health information. The database trusts the acting user that the backend stamps into `vytal.user_id` after login; that is the trust boundary between the web tier and the database.
 
 Setup gives the two database roles, `vytal_app` (the application) and `vytal_report` (read-only reporting), development passwords. To choose your own, set them before running setup: `VYTAL_APP_PW=... VYTAL_REPORT_PW=... ./setup.sh` (PowerShell: add `-v app_pw=... -v report_pw=...` to the `psql` command).
 
@@ -154,7 +154,7 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **294 passed** (all tests run; nothing is skipped).
+Expected: **331 passed** (all tests run; nothing is skipped).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
 
