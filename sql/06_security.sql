@@ -5,15 +5,20 @@ DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_owner') THEN CREATE ROLE vytal_owner; END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_app') THEN CREATE ROLE vytal_app; END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_report') THEN CREATE ROLE vytal_report; END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vytal_scheduler') THEN CREATE ROLE vytal_scheduler; END IF;
 END $$;
 ALTER ROLE vytal_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;  -- roles are cluster-wide and may pre-exist
 ALTER ROLE vytal_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
 ALTER ROLE vytal_report LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
--- dev defaults; pass real ones with psql -v app_pw=... -v report_pw=... (setup.sh forwards VYTAL_APP_PW / VYTAL_REPORT_PW)
+ALTER ROLE vytal_scheduler LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+-- dev defaults; pass real ones with psql -v app_pw=... -v report_pw=... -v scheduler_pw=...
+-- (setup.sh forwards VYTAL_APP_PW / VYTAL_REPORT_PW / VYTAL_SCHEDULER_PW)
 \if :{?app_pw} \else \set app_pw 'vytal_app_dev' \endif
 \if :{?report_pw} \else \set report_pw 'vytal_report_dev' \endif
+\if :{?scheduler_pw} \else \set scheduler_pw 'vytal_scheduler_dev' \endif
 ALTER ROLE vytal_app PASSWORD :'app_pw';
 ALTER ROLE vytal_report PASSWORD :'report_pw';
+ALTER ROLE vytal_scheduler PASSWORD :'scheduler_pw';
 
 REVOKE ALL ON ALL TABLES IN SCHEMA vytal FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA vytal FROM PUBLIC;
@@ -37,9 +42,12 @@ BEGIN
     END LOOP;
 END $$;
 
--- application: reads tables and never writes them; every change goes through a procedure (CALL). Each procedure checks in
--- the database that the acting user (vytal.user_id, stamped by the backend after login) is active, holds the right role
--- and, for staff, works at the facility the record belongs to. Internal helpers and trigger functions are not callable.
+-- application: reads tables and never writes them; every change goes through a procedure (CALL). Writes are enforced in
+-- the database: each procedure that has an acting user (vytal.user_id, stamped by the backend after login) checks that the
+-- user is active, holds the right role and, for staff, works at the facility the record belongs to. Reads are NOT row
+-- restricted (vytal_app has table SELECT and there is no row-level security), so donor-own and facility-own read scoping is
+-- done by the backend (vytal/services.py); sensitive columns are restricted here by column grants and scoped functions.
+-- Internal helpers and trigger functions are not callable.
 GRANT USAGE ON SCHEMA vytal TO vytal_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA vytal TO vytal_app;
 GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA vytal TO vytal_app;
@@ -73,3 +81,9 @@ GRANT SELECT (audit_id, user_id, action, table_name, record_id, field_name, chan
 GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int) TO vytal_report;
 REVOKE SELECT ON user_session FROM vytal_report;
 GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_report;
+
+-- scheduler (FR-20): the cron job's own login. It may do one thing, run the nightly expiry; it has no table rights and no
+-- other routine. run_nightly_expiry() recognises it by its login name and otherwise wants an Admin session, so vytal_app
+-- can still call it for a signed-in Admin but cannot run it without one.
+GRANT USAGE ON SCHEMA vytal TO vytal_scheduler;
+GRANT EXECUTE ON PROCEDURE run_nightly_expiry(int) TO vytal_scheduler;

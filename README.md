@@ -108,9 +108,9 @@ foreach ($f in Get-ChildItem sql\0*.sql | Sort-Object Name) { psql -v ON_ERROR_S
 
 No output means it worked. To start over, run `dropdb vytal` and repeat this step.
 
-Least privilege (SE-04): every routine is owned by `vytal_owner`, a non-superuser role that cannot log in, and every procedure runs as that owner (`SECURITY DEFINER`, fixed `search_path`). The application login `vytal_app` can call procedures but cannot insert, update or delete any table itself. Every procedure checks in the database that the acting user is active, holds the right role and, for staff, works at the facility the record belongs to; a connection with no acting user is refused. The app also cannot read password hashes, lockout counters, contact details, screening answers or audit values (SE-07): login, the user's own profile, screening answers (to the donor or clinic staff) and the audit trail (to an Admin) come through scoped functions. Donation calls use a fixed message template, so they can never carry health information. The database trusts the acting user that the backend stamps into `vytal.user_id` after login; that is the trust boundary between the web tier and the database.
+Least privilege (SE-04): every routine is owned by `vytal_owner`, a non-superuser role that cannot log in, and every procedure runs as that owner (`SECURITY DEFINER`, fixed `search_path`). The application login `vytal_app` can call procedures but cannot insert, update or delete any table itself. Writes are enforced in the database: every procedure that has an acting user checks that the user is active, holds the right role and, for staff, works at the facility the record belongs to, and a connection with no acting user is refused. Reads are not row restricted in the database (there is no row-level security): vytal_app has table SELECT, so which donors or facility records a user may see is scoped by the Python backend (`vytal/services.py`). The sensitive columns are restricted in the database, though: the app cannot read password hashes, lockout counters, contact details, screening answers, audit values or session token hashes (SE-07), and login, the user's own profile, screening answers (to the donor or clinic staff) and the audit trail (to an Admin) come through scoped functions. Donation calls use a fixed message template, so they can never carry health information. The database trusts the acting user that the backend stamps into `vytal.user_id` after login; that is the trust boundary between the web tier and the database, and a stated limitation: a compromised backend could read any non-sensitive row. PostgreSQL row-level security with one database login per user is the production hardening step.
 
-Setup gives the two database roles, `vytal_app` (the application) and `vytal_report` (read-only reporting), development passwords. To choose your own, set them before running setup: `VYTAL_APP_PW=... VYTAL_REPORT_PW=... ./setup.sh` (PowerShell: add `-v app_pw=... -v report_pw=...` to the `psql` command).
+Setup gives the three database roles, `vytal_app` (the application), `vytal_report` (read-only reporting) and `vytal_scheduler` (runs only the nightly expiry job), development passwords. To choose your own, set them before running setup: `VYTAL_APP_PW=... VYTAL_REPORT_PW=... VYTAL_SCHEDULER_PW=... ./setup.sh` (PowerShell: add `-v app_pw=... -v report_pw=... -v scheduler_pw=...` to the `psql` command).
 
 ---
 
@@ -154,7 +154,7 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **331 passed** (all tests run; nothing is skipped).
+Expected: **347 passed** (all tests run; nothing is skipped).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
 
@@ -176,7 +176,7 @@ This builds a separate `vytal_demo` database and replays Scenario 1 from the Ste
 
 Every command that changes data is a stored procedure (`CREATE PROCEDURE`, run with `CALL`); results come back through `INOUT` parameters, for example `CALL vytal.allocate(23, NULL)` returns the number of units it reserved. Functions (`CREATE FUNCTION`, run with `SELECT`) are kept for triggers, read-only calculations used inside queries such as `donor_eligibility()` and `eligible_donors()`, and small helpers.
 
-`run_nightly_expiry()` is the nightly expiry job (FR-20): `CALL vytal.run_nightly_expiry();` expires every unit past its date and returns how many. The `ops/` folder makes the scheduled jobs runnable:
+`run_nightly_expiry()` is the nightly expiry job (FR-20): `CALL vytal.run_nightly_expiry();` expires every unit past its date and returns how many. It runs only for an Admin session or the `vytal_scheduler` login, so an ordinary app session cannot trigger it. The `ops/` folder makes the scheduled jobs runnable:
 
 | Script | What it does |
 |---|---|

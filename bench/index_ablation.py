@@ -62,7 +62,7 @@ class Workloads:
         self.con, self.cur = con, con.cursor()
         c = self.cur
         # an eligible, verified, unflagged donor and a staff member, for the donation-insert path
-        self.donor = c.execute("SELECT user_id FROM v_donor_eligibility WHERE status = 'Eligible' AND group_verified "
+        self.donor = c.execute("SELECT user_id FROM v_donor_eligibility WHERE can_be_called AND group_verified "
                                "ORDER BY user_id LIMIT 1").fetchone()[0]
         self.staff = c.execute("SELECT min(user_id) FROM staff").fetchone()[0]
         # a donor with a long history and deferrals, for recompute_next_eligible

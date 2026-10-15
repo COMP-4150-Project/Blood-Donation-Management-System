@@ -308,6 +308,44 @@ def test_no_screening_on_record_asks_for_one(db):
     assert eligibility(db, d) == ("Eligible", None, None)
 
 
+def test_screening_must_be_within_24_hours(db):
+    """BR-05 / FR-06: the donation trigger wants a screening in the 24 hours before; the function says the same."""
+    d = db.donor()
+    db.screen(d, days_ago=2)
+    assert eligibility(db, d) == ("Screening older than 24 hours, repeat before donating", None,
+                                  "The last screening was more than 24 hours ago")
+    assert db.one("SELECT can_be_called FROM v_donor_eligibility WHERE user_id=%s", (d,))      # callable, screened at the visit
+    db.screen(d, days_ago=0)
+    assert eligibility(db, d) == ("Eligible", None, None)
+    # the window is an exact 24 hours: 23 hours old is fresh, 25 hours old is stale
+    e = db.donor()
+    db.q("INSERT INTO screening (donor_id, completed_at) VALUES (%s, now() - interval '25 hours')", (e,))
+    assert eligibility(db, e)[0].startswith("Screening older")
+    db.q("INSERT INTO screening (donor_id, completed_at) VALUES (%s, now() - interval '23 hours')", (e,))
+    assert eligibility(db, e)[0] == "Eligible"
+
+
+def test_a_deferral_still_outranks_a_stale_screening(db):
+    d = db.donor()
+    db.screen(d, days_ago=3)
+    db.q("CALL record_deferral(%s,%s,'TATTOO')", (db.nurse, d))
+    assert eligibility(db, d)[0].startswith("Not eligible until")
+    assert not db.one("SELECT can_be_called FROM v_donor_eligibility WHERE user_id=%s", (d,))
+
+
+def test_eligible_means_record_donation_is_not_refused_for_eligibility(db):
+    """Consistency: whenever donor_eligibility says Eligible, the donation trigger accepts the donor on its own checks;
+    when it says the screening is stale, the trigger refuses for exactly that reason."""
+    ok = db.donor()
+    db.screen(ok, days_ago=0)
+    stale = db.donor()
+    db.screen(stale, days_ago=2)
+    assert eligibility(db, ok)[0] == "Eligible"
+    assert eligibility(db, stale)[0].startswith("Screening older")
+    assert db.fails("CALL record_donation(%s,%s,'WB',450,140)", (ok, db.nurse)) == ""
+    assert "no screening in the 24 hours" in db.fails("CALL record_donation(%s,%s,'WB',450,140)", (stale, db.nurse))
+
+
 def test_temporary_deferral_shows_its_end_date_and_reason(db):
     """FR-07: 'Not eligible until a date' with the reason; eligible again on that date (Scenario 2)."""
     d = db.donor()
@@ -384,8 +422,9 @@ def test_nightly_job_is_a_procedure_that_reports_its_count(db):
     db.stock("A+", comps=("PLT",), days_ago=6)
     assert db.one("SELECT prokind FROM pg_proc WHERE proname = 'run_nightly_expiry'") == "p"
     assert db.one("CALL run_nightly_expiry()") == 1
-    db.q("SET LOCAL ROLE vytal_app")                                      # the scheduler's least-privilege login can run it
+    db.q("SET LOCAL ROLE vytal_app")                                      # the application role can run it for an Admin
     db.q("SET LOCAL search_path = public")                                # cron connects without the vytal search_path
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
     assert db.one("CALL vytal.run_nightly_expiry()") == 0
 
 

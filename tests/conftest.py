@@ -108,8 +108,8 @@ class DB:
             self.q("SELECT set_config('vytal.user_id', %s, true)", (str(self.nurse),))
             self.q("UPDATE donor SET verified_by=%s, verified_at=now() WHERE user_id=%s", (self.nurse, uid))
             self.q("SELECT set_config('vytal.user_id', %s, true)", (prev or "",))
-        if screened:                                    # a screening on record (UC-05 2a), taken yesterday
-            self.screen(uid, days_ago=1)
+        if screened:                                    # a screening on record (UC-05 2a), taken just now (BR-05: within 24 hours)
+            self.screen(uid, days_ago=0)
         return uid
 
     def screen(self, donor, days_ago=0):
