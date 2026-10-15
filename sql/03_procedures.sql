@@ -11,9 +11,16 @@ SET search_path = vytal;
 -- cannot write any table itself, so procedures are the only way it changes data (SE-04).
 
 -- ---------------------------------------------------------------- FR-20 / UC-14 nightly expiry job
+-- SE-02: runs for an active Admin session, or from the scheduler's own database login (vytal_scheduler, 06_security.sql),
+-- which is how ops/nightly_expiry.sh calls it. The login comes from caller_role(), which a SECURITY DEFINER routine does
+-- not change and the application role cannot fake. Anyone else, and a session with no acting user, is refused.
 CREATE PROCEDURE run_nightly_expiry(INOUT expired int DEFAULT NULL) LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = vytal, pg_temp AS $$
+DECLARE actor int;
 BEGIN
+    IF caller_role() = 'vytal_scheduler' THEN actor := NULL;          -- the job itself: no person to record
+    ELSE actor := require_actor(ARRAY['Admin']);
+    END IF;
     -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
     UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
       AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
@@ -21,7 +28,8 @@ BEGIN
     UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
     WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
     GET DIAGNOSTICS expired = ROW_COUNT;
-    INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'run_nightly_expiry', expired::text);
+    INSERT INTO audit_log (user_id, action, table_name, record_id, new_value)
+    VALUES (actor, 'JOB', 'blood_unit', 'run_nightly_expiry', expired::text);    -- the acting Admin, or NULL for the scheduler
     RAISE NOTICE 'expired % unit(s)', expired;
 END $$;
 

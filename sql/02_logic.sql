@@ -1,12 +1,15 @@
 SET search_path = vytal;
 
 -- ---------------------------------------------------------------- SE-04 who is really calling
--- True when the role the client acts as is a superuser (setup, sample data, maintenance). It reads the SET ROLE setting, or
--- the login role when none is set, not current_user: inside the SECURITY DEFINER procedures current_user is the owner
--- role, while this stays the caller, and the application role cannot SET ROLE to a superuser.
+-- The role the client acts as: the SET ROLE setting, or the login role when none is set, not current_user: inside the
+-- SECURITY DEFINER procedures current_user is the owner role, while this stays the caller, and the application role cannot
+-- SET ROLE to a superuser (or to the scheduler).
+CREATE FUNCTION caller_role() RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN current_setting('role') = 'none' THEN session_user::text ELSE current_setting('role') END
+$$;
+-- True when that role is a superuser (setup, sample data, maintenance).
 CREATE FUNCTION caller_is_superuser() RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT rolsuper FROM pg_roles
-    WHERE rolname = CASE WHEN current_setting('role') = 'none' THEN session_user::text ELSE current_setting('role') END
+    SELECT rolsuper FROM pg_roles WHERE rolname = caller_role()
 $$;
 
 -- ---------------------------------------------------------------- subclass row must match role (EER disjoint)
@@ -341,7 +344,11 @@ END $$;
 -- FR-07 / BR-05 / UC-05 the eligibility function: status, the date the donor can give again, and the reason.
 -- next_eligible_date already folds in the BR-02 interval and active BR-04 deferrals (recompute_next_eligible); a failed
 -- screening shows up as the deferral it created, so the donor is Eligible again when it ends (Scenario 2). UC-05 2a: an
--- otherwise eligible donor with no screening on record is asked to complete one. LANGUAGE sql so the planner inlines it.
+-- otherwise eligible donor with no screening on record is asked to complete one, and BR-05 / FR-06: the screening must
+-- be in the 24 hours before the donation, the rule check_donation_eligible() enforces, so an older one is stale. That
+-- window ends now (or at the end of p_on when p_on is in the past), so a donor who says Eligible passes every
+-- eligibility rule here. record_donation also needs a verified blood group, which this status does not look at
+-- (can_be_called does). LANGUAGE sql so the planner inlines it.
 CREATE FUNCTION donor_eligibility(p_donor int, p_on date DEFAULT CURRENT_DATE)
 RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE AS $$
     -- tables are schema-qualified instead of SET search_path, which would stop the planner inlining this function
@@ -352,6 +359,9 @@ RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE
                 WHEN w.from_date > p_on THEN 'Not eligible until ' || w.from_date
                 WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
                     THEN 'Complete screening to confirm eligibility'
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id
+                                 AND s.completed_at BETWEEN w.ref - interval '24 hours' AND w.ref)
+                    THEN 'Screening older than 24 hours, repeat before donating'
                 ELSE 'Eligible' END,
            CASE WHEN a.is_active AND NOT o.is_flagged AND o.next_eligible_date IS DISTINCT FROM 'infinity'
                      AND o.weight_kg >= r.min_weight_kg AND w.from_date > p_on THEN w.from_date END,
@@ -368,18 +378,26 @@ RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE
                          ELSE 'Minimum interval since the last donation' END)
                 WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
                     THEN 'No pre-donation screening on record'
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id
+                                 AND s.completed_at BETWEEN w.ref - interval '24 hours' AND w.ref)
+                    THEN 'The last screening was more than 24 hours ago'
            END
     FROM vytal.donor o JOIN vytal.user_account a USING (user_id) JOIN vytal.eligibility_rule r USING (sex)
     CROSS JOIN LATERAL (SELECT (o.date_of_birth + make_interval(years => r.min_age_years))::date AS age_date,
                                greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date)
-                               AS from_date) w
+                               AS from_date,
+                               CASE WHEN p_on < CURRENT_DATE THEN ((p_on + 1)::timestamp AT TIME ZONE 'UTC') ELSE now() END AS ref) w
     WHERE o.user_id = p_donor
 $$;
 
--- FR-07 / US-02 eligibility shown to donors and staff: one row per donor, read from donor_eligibility()
+-- FR-07 / US-02 eligibility shown to donors and staff: one row per donor, read from donor_eligibility().
+-- can_be_called: eligible apart from a screening older than 24 hours. A call is an invitation and the screening is done
+-- at the visit right before the donation (UC-07, BR-05), so a stale one must not keep a donor off the call lists and
+-- counts; a donor with no screening on record at all (UC-05 2a) is still left out. status = 'Eligible' stays strict.
 CREATE VIEW v_donor_eligibility AS
 SELECT o.user_id, o.donor_code, o.blood_group, o.next_eligible_date, o.verified_by IS NOT NULL AS group_verified,
-       e.status, e.eligible_from, e.reason
+       e.status, e.eligible_from, e.reason,
+       e.status IN ('Eligible', 'Screening older than 24 hours, repeat before donating') AS can_be_called
 FROM donor o CROSS JOIN LATERAL donor_eligibility(o.user_id) e;
 
 -- FR-25 eligible, compatible, group-verified donors for a request (code, group, eligibility only; no contact details)
@@ -390,7 +408,7 @@ RETURNS TABLE (donor_code varchar, blood_group varchar, next_eligible_date date)
          AND (c.recipient_group = r.recipient_group OR (r.recipient_group IS NULL AND c.recipient_group = 'AB+' AND
               (SELECT count(*) FROM compatibility c2 WHERE c2.component_code = r.component_code AND c2.donor_group = c.donor_group) = 8))
     JOIN v_donor_eligibility e ON e.blood_group = c.donor_group
-    WHERE r.request_id = p_request AND e.status = 'Eligible' AND e.group_verified
+    WHERE r.request_id = p_request AND e.can_be_called AND e.group_verified
 $$;
 
 -- UC-18 manual search: eligible, verified donors whose group can give this component to a recipient group (no request needed)
@@ -398,7 +416,7 @@ CREATE FUNCTION donors_for_group(p_recipient text, p_component text DEFAULT 'RBC
 RETURNS TABLE (donor_code varchar, blood_group varchar, next_eligible_date date) LANGUAGE sql STABLE AS $$
     SELECT e.donor_code, e.blood_group, e.next_eligible_date
     FROM compatibility c JOIN v_donor_eligibility e ON e.blood_group = c.donor_group
-    WHERE c.component_code = p_component AND c.recipient_group = p_recipient AND e.status = 'Eligible' AND e.group_verified
+    WHERE c.component_code = p_component AND c.recipient_group = p_recipient AND e.can_be_called AND e.group_verified
 $$;
 
 -- FR-30 lookback
@@ -445,6 +463,13 @@ CREATE TRIGGER audit_user AFTER INSERT OR UPDATE OR DELETE ON user_account FOR E
 CREATE TRIGGER audit_facility AFTER INSERT OR UPDATE OR DELETE ON facility FOR EACH ROW EXECUTE FUNCTION audit_row('facility_id');
 CREATE TRIGGER audit_threshold AFTER INSERT OR UPDATE OR DELETE ON stock_threshold FOR EACH ROW EXECUTE FUNCTION audit_row('facility_id', 'blood_group', 'component_code');
 CREATE TRIGGER audit_donation AFTER INSERT OR UPDATE OR DELETE ON donation FOR EACH ROW EXECUTE FUNCTION audit_row('donation_id');
+-- FR-33: staff, lab results, reservations and donation calls too, so every change to a clinical record or to who may act on it
+-- is traceable. None of these tables holds a secret (the login hash lives on user_account and audit_row skips it).
+CREATE TRIGGER audit_staff AFTER INSERT OR UPDATE OR DELETE ON staff FOR EACH ROW EXECUTE FUNCTION audit_row('user_id');
+CREATE TRIGGER audit_test_result AFTER INSERT OR UPDATE OR DELETE ON test_result FOR EACH ROW EXECUTE FUNCTION audit_row('donation_id', 'test_code');
+CREATE TRIGGER audit_request_unit AFTER INSERT OR UPDATE OR DELETE ON request_unit FOR EACH ROW EXECUTE FUNCTION audit_row('request_id', 'unit_id');
+CREATE TRIGGER audit_call AFTER INSERT OR UPDATE OR DELETE ON donation_call FOR EACH ROW EXECUTE FUNCTION audit_row('call_id');
+CREATE TRIGGER audit_call_recipient AFTER INSERT OR UPDATE OR DELETE ON call_recipient FOR EACH ROW EXECUTE FUNCTION audit_row('call_id', 'donor_id');
 
 -- ---------------------------------------------------------------- UC-24 2a every recipient group keeps a compatible donor group
 -- Checked per statement for the components the statement touched (a new component with no rules yet does not block

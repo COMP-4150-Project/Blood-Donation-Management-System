@@ -12,6 +12,11 @@ ALTER TABLE donation DISABLE TRIGGER audit_donation;
 ALTER TABLE deferral DISABLE TRIGGER audit_deferral;
 ALTER TABLE blood_unit DISABLE TRIGGER audit_unit;
 ALTER TABLE blood_request DISABLE TRIGGER audit_request;
+ALTER TABLE staff DISABLE TRIGGER audit_staff;
+ALTER TABLE test_result DISABLE TRIGGER audit_test_result;
+ALTER TABLE request_unit DISABLE TRIGGER audit_request_unit;
+ALTER TABLE donation_call DISABLE TRIGGER audit_call;
+ALTER TABLE call_recipient DISABLE TRIGGER audit_call_recipient;
 
 -- ---------------------------------------------------------------- facilities (FR-35)
 INSERT INTO facility (facility_id, name, facility_type, address, phone, email) VALUES
@@ -660,6 +665,11 @@ ALTER TABLE donation ENABLE TRIGGER audit_donation;
 ALTER TABLE deferral ENABLE TRIGGER audit_deferral;
 ALTER TABLE blood_unit ENABLE TRIGGER audit_unit;
 ALTER TABLE blood_request ENABLE TRIGGER audit_request;
+ALTER TABLE staff ENABLE TRIGGER audit_staff;
+ALTER TABLE test_result ENABLE TRIGGER audit_test_result;
+ALTER TABLE request_unit ENABLE TRIGGER audit_request_unit;
+ALTER TABLE donation_call ENABLE TRIGGER audit_call;
+ALTER TABLE call_recipient ENABLE TRIGGER audit_call_recipient;
 
 -- ================================================================ today, through the stored procedures
 SELECT set_config('vytal.user_id', '1', false);

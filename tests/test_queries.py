@@ -59,8 +59,7 @@ def test_q03_only_eligible_compatible_donors(sdb):
     req = out[0]["request_id"]
     rec, comp = sdb.q("SELECT recipient_group, component_code FROM blood_request WHERE request_id=%s", (req,))[0]
     for r in out:
-        status = sdb.one("SELECT status FROM v_donor_eligibility WHERE donor_code=%s", (r["donor_code"],))
-        assert status == "Eligible"
+        assert sdb.one("SELECT can_be_called FROM v_donor_eligibility WHERE donor_code=%s", (r["donor_code"],))
         allowed = sdb.one("SELECT count(*) FROM compatibility WHERE component_code=%s AND donor_group=%s "
                           "AND (recipient_group=%s OR %s::varchar IS NULL)", (comp, r["blood_group"], rec, rec))
         assert allowed >= (1 if rec else 8)

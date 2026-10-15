@@ -327,7 +327,7 @@ def test_nightly_job_runs_through_the_backend(world):
         con.execute("UPDATE vytal.blood_unit SET expires_at = now() - interval '1 minute' WHERE unit_id = ANY(%s)", (units,))
         assert con.execute("SELECT count(*) FROM vytal.blood_unit WHERE expires_at <= now() "
                            "AND status IN ('Collected','Available','Reserved')").fetchone()[0] == 2
-    assert svc.nightly_expiry() == 2
+    assert svc.nightly_expiry(world["admin"]) == 2
     with owner(world) as con:
         assert con.execute("SELECT DISTINCT status FROM vytal.blood_unit WHERE unit_id = ANY(%s)", (units,)).fetchall() == \
             [("Expired",)]

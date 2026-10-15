@@ -494,10 +494,10 @@ def set_facility_active(admin_id, facility_id, active):
     return _call(admin_id, "CALL set_facility_active(%s,%s,%s)", admin_id, facility_id, active)
 
 
-def nightly_expiry():
-    """FR-20: run by the scheduler, not by a user."""
-    with session() as con:
-        return con.execute("CALL run_nightly_expiry()").fetchone()[0]
+def nightly_expiry(admin_id):
+    """FR-20: for an Admin session. The scheduled run is ops/nightly_expiry.sh, which logs in as vytal_scheduler instead
+    (the database refuses any other session without an Admin)."""
+    return _call(admin_id, "CALL run_nightly_expiry()")
 
 
 # ---------------------------------------------------------------------- helpers

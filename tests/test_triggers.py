@@ -246,6 +246,73 @@ def test_facility_threshold_and_donation_changes_are_audited(db):
         ("stock_threshold", "INSERT", f"{db.fac_h}/O-/RBC"), ("facility", "UPDATE", str(db.fac_b)), ("donation", "INSERT", str(dn))}
 
 
+def audit_rows(db, table, action=None):
+    return db.q("SELECT action, record_id, field_name, old_value, new_value FROM audit_log WHERE table_name=%s "
+                "AND (%s::text IS NULL OR action=%s) ORDER BY audit_id", (table, action, action))
+
+
+def test_staff_changes_are_audited(db):
+    uid = db.one("CALL create_staff(%s,'aud@v.ca','x','Al','Ud',%s,'Nurse')", (db.admin, db.fac_h))
+    assert [a for a, r, *_ in audit_rows(db, "staff") if r == str(uid)] == ["INSERT"]
+    db.q("UPDATE staff SET facility_id=%s, job_title='Lead' WHERE user_id=%s", (db.fac_b, uid))
+    assert {(f, o, n) for a, r, f, o, n in audit_rows(db, "staff", "UPDATE") if r == str(uid)} == {
+        ("facility_id", str(db.fac_h), str(db.fac_b)), ("job_title", "Nurse", "Lead")}
+    db.q("DELETE FROM staff WHERE user_id=%s", (uid,))
+    assert [a for a, r, *_ in audit_rows(db, "staff") if r == str(uid)] == ["INSERT", "UPDATE", "UPDATE", "DELETE"]
+    assert "password" not in "".join(str(x) for row in audit_rows(db, "staff") for x in row)
+
+
+def test_test_result_changes_are_audited(db):
+    dn = db.donate(db.donor())
+    db.q("INSERT INTO test_result (donation_id, test_code, result) VALUES (%s,'HIV','Negative')", (dn,))
+    rec = f"{dn}/HIV"
+    assert [(a, r) for a, r, *_ in audit_rows(db, "test_result")] == [("INSERT", rec)]
+    db.q("UPDATE test_result SET result='Positive' WHERE donation_id=%s AND test_code='HIV'", (dn,))
+    assert ("UPDATE", rec, "result", "Negative", "Positive") in audit_rows(db, "test_result")
+    db.q("DELETE FROM test_result WHERE donation_id=%s", (dn,))
+    assert audit_rows(db, "test_result")[-1][:2] == ("DELETE", rec)
+
+
+def test_request_unit_changes_are_audited(db):
+    unit = db.stock("O+")[0]
+    r = db.request("O+")
+    db.q("CALL allocate(%s)", (r,))
+    rec = f"{r}/{unit}"
+    assert [(a, rid) for a, rid, *_ in audit_rows(db, "request_unit")] == [("INSERT", rec)]
+    db.q("UPDATE request_unit SET released_at = now() WHERE request_id=%s", (r,))
+    assert [(a, rid, f) for a, rid, f, *_ in audit_rows(db, "request_unit", "UPDATE")] == [("UPDATE", rec, "released_at")]
+    db.q("DELETE FROM request_unit WHERE request_id=%s", (r,))
+    assert audit_rows(db, "request_unit")[-1][:2] == ("DELETE", rec)
+
+
+def test_donation_call_and_recipient_changes_are_audited(db):
+    d = db.donor("O-", screened=True)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    r = db.request("O-", comp="RBC", urgency="Emergency")
+    cid = db.one("INSERT INTO donation_call (request_id, sent_by, message) VALUES (%s,%s,'m') RETURNING call_id", (r, db.nurse))
+    db.q("INSERT INTO call_recipient (call_id, donor_id) VALUES (%s,%s)", (cid, d))
+    assert [(a, rid) for a, rid, *_ in audit_rows(db, "donation_call")] == [("INSERT", str(cid))]
+    assert [(a, rid) for a, rid, *_ in audit_rows(db, "call_recipient")] == [("INSERT", f"{cid}/{d}")]
+    db.q("UPDATE donation_call SET message='n' WHERE call_id=%s", (cid,))
+    db.q("UPDATE call_recipient SET response='Accepted', responded_at=now() WHERE call_id=%s", (cid,))
+    assert ("UPDATE", str(cid), "message", "m", "n") in audit_rows(db, "donation_call")
+    assert {f for a, rid, f, *_ in audit_rows(db, "call_recipient", "UPDATE")} == {"response", "responded_at"}
+    db.q("DELETE FROM call_recipient WHERE call_id=%s", (cid,))
+    db.q("DELETE FROM donation_call WHERE call_id=%s", (cid,))
+    assert audit_rows(db, "call_recipient")[-1][:2] == ("DELETE", f"{cid}/{d}")
+    assert audit_rows(db, "donation_call")[-1][:2] == ("DELETE", str(cid))
+
+
+def test_every_audited_table_has_its_audit_trigger(db):
+    """FR-33: the audited tables are exactly these; a table added to or dropped from the list must be a decision."""
+    audited = {t for (t,) in db.q("SELECT c.relname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+                                   "JOIN pg_proc p ON p.oid = g.tgfoid WHERE p.proname = 'audit_row' AND NOT g.tgisinternal")}
+    assert audited == {"donor", "deferral", "blood_unit", "blood_request", "compatibility", "component_type",
+                       "donation_interval", "eligibility_rule", "deferral_reason", "user_account", "facility",
+                       "stock_threshold", "donation", "staff", "test_result", "request_unit", "donation_call",
+                       "call_recipient"}
+
+
 # ---------------------------------------------------------------------- UC-24 2a compatibility coverage
 def test_compatibility_edit_that_keeps_coverage_is_accepted(db):
     db.q("DELETE FROM compatibility WHERE component_code='RBC' AND recipient_group='AB+' AND donor_group='A+'")
