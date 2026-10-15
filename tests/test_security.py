@@ -1,5 +1,6 @@
 """SE-04 least privilege, SE-08 / DI-04 history that cannot be rewritten."""
 import json
+import re
 import pytest
 
 
@@ -43,17 +44,20 @@ def test_report_role_is_read_only_and_cannot_see_password_hashes(db):
     assert "permission denied" in db.fails("UPDATE facility SET name = 'x'")
 
 
-APP_FUNCTIONS = {"donor_eligibility(integer,date)", "eligible_donors(integer)", "donors_for_group(text,text)"}
+APP_FUNCTIONS = {"donor_eligibility(integer,date)", "eligible_donors(integer)", "donors_for_group(text,text)",
+                 "login_lookup(text)", "my_profile()", "screening_answers(integer)",
+                 "audit_entries(integer,text,text,timestamp with time zone,timestamp with time zone,integer)"}
+INTERNAL_PROCEDURES = ["release_tested(integer,integer)"]
 
 
 def test_app_role_runs_every_procedure_and_only_the_read_only_functions(db):
-    """SE-04: the app may CALL every procedure and SELECT three read-only functions; helpers and trigger functions are closed."""
+    """SE-04: the app may CALL every procedure except internal steps, and only the read-only and scoped functions."""
     can = {(sig, kind) for sig, kind in db.q(
         "SELECT p.oid::regprocedure::text, p.prokind FROM pg_proc p WHERE p.pronamespace = 'vytal'::regnamespace "
         "AND has_function_privilege('vytal_app', p.oid, 'EXECUTE')")}
     assert {s for s, k in can if k == "f"} == APP_FUNCTIONS
     assert db.q("SELECT p.oid::regprocedure::text FROM pg_proc p WHERE p.pronamespace = 'vytal'::regnamespace "
-                "AND p.prokind = 'p' AND NOT has_function_privilege('vytal_app', p.oid, 'EXECUTE')") == []
+                "AND p.prokind = 'p' AND NOT has_function_privilege('vytal_app', p.oid, 'EXECUTE')") == [(s,) for s in INTERNAL_PROCEDURES]
     assert db.q("SELECT p.oid::regprocedure::text FROM pg_proc p, aclexplode(p.proacl) a "
                 "WHERE p.pronamespace = 'vytal'::regnamespace AND a.grantee = 0") == []
 
@@ -101,7 +105,7 @@ def test_screening_is_entered_by_the_donor_or_staff(db):
     db.q("SET LOCAL ROLE vytal_app")
     for who in (other, db.admin):
         db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
-        assert "entered by the donor or by staff" in db.fails("CALL submit_screening(%s,%s)", (d, answers))
+        assert re.search("entered by the donor or by staff|donor or staff access only", db.fails("CALL submit_screening(%s,%s)", (d, answers)))
     for who in (d, db.nurse):
         db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
         assert db.one("CALL submit_screening(%s,%s)", (d, answers)) > 0
@@ -163,3 +167,130 @@ def test_app_role_cannot_borrow_a_superuser_exemption(db):
     assert db.one("SELECT caller_is_superuser()") is True                 # this superuser test session
     db.q("SET LOCAL ROLE vytal_owner")                                      # acting as another role turns the exemption off
     assert db.one("SELECT caller_is_superuser()") is False
+
+
+# ---------------------------------------------------------------------- SE-02 procedures that take no user id check the session
+def _caller_world(db):
+    """A hospital donation and request owned by the nurse, as the owner, before switching to the app role."""
+    d = db.donor("O+", screened=True)
+    dn = db.donate(d)
+    return d, dn, db.request("O+")
+
+
+CALLER_CHECKED = [
+    ("quarantine_donor", "CALL quarantine_donor(%(d)s)"),
+    ("close_request", "CALL close_request(%(r)s)"),
+    ("allocate", "CALL allocate(%(r)s)"),
+    ("send_donation_call", "CALL send_donation_call(%(r)s, %(nurse)s)"),
+    ("record_donation", "CALL record_donation(%(d)s, %(nurse)s, 'WB', 450, 140)"),
+    ("separate_donation", "CALL separate_donation(%(dn)s, ARRAY['RBC'])"),
+    ("record_tests", "CALL record_tests(%(dn)s, '{\"HIV\": \"Negative\"}')"),
+]
+
+
+@pytest.mark.parametrize("name,sql", CALLER_CHECKED, ids=[n for n, _ in CALLER_CHECKED])
+def test_procedures_refuse_a_donor_session_and_no_session(db, name, sql):
+    """SE-02: as vytal_app, a donor's session or a connection with no acting user cannot run a staff or Admin command."""
+    d, dn, r = _caller_world(db)
+    args = {"d": d, "dn": dn, "r": r, "nurse": db.nurse}
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    assert re.search("access only|does not match the session", db.fails(sql, args)), name
+    db.q("SELECT set_config('vytal.user_id', '', true)")
+    assert re.search("no acting user|does not match the session", db.fails(sql, args)), name
+
+
+@pytest.mark.parametrize("name,sql", [c for c in CALLER_CHECKED if c[0] != "record_donation"],
+                         ids=[n for n, _ in CALLER_CHECKED if n != "record_donation"])
+def test_procedures_refuse_staff_from_another_facility(db, name, sql):
+    """SE-02: the blood centre's phlebotomist cannot act on the hospital's requests or donations (quarantine is Admin-only)."""
+    d, dn, r = _caller_world(db)
+    args = {"d": d, "dn": dn, "r": r, "nurse": db.phleb}
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.phleb),))
+    assert re.search("another facility|admin access only", db.fails(sql, args)), name
+
+
+def test_own_staff_and_admin_pass_the_caller_checks(db):
+    d, dn, r = _caller_world(db)
+    db.stock("O+")
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert db.one("CALL allocate(%s)", (r,)) == 1
+    assert db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,)) == [f"U{dn}-RBC"]
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
+    assert db.one("CALL quarantine_donor(%s)", (d,)) == 0
+
+
+def test_release_tested_is_internal(db):
+    db.q("SET LOCAL ROLE vytal_app")
+    assert "permission denied" in db.fails("CALL release_tested(1)")
+
+
+# ---------------------------------------------------------------------- SE-07 minimum disclosure for the application role
+@pytest.mark.parametrize("sql", [
+    "SELECT password_hash FROM user_account", "SELECT failed_logins FROM user_account", "SELECT locked_until FROM user_account",
+    "SELECT email FROM user_account", "SELECT phone FROM user_account", "SELECT address FROM donor",
+    "SELECT * FROM screening_answer", "SELECT old_value FROM audit_log", "SELECT new_value FROM audit_log",
+    "SELECT token_hash FROM user_session"])
+def test_app_role_cannot_read_protected_columns(db, sql):
+    db.q("SET LOCAL ROLE vytal_app")
+    assert "permission denied" in db.fails(sql)
+
+
+def test_scoped_functions_hand_out_only_the_callers_data(db):
+    d, other = db.donor(), db.donor()
+    db.q("UPDATE user_account SET phone = '519-555-0101' WHERE user_id = %s", (d,))
+    sid = db.one("CALL submit_screening(%s, %s)", (d, json.dumps(db.one(ANSWERS))))
+    email = db.one("SELECT email FROM user_account WHERE user_id = %s", (d,))
+    db.q("SET LOCAL ROLE vytal_app")
+    assert db.q("SELECT user_id, role FROM login_lookup(%s)", (email.upper(),)) == [(d, "Donor")]
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    assert db.q("SELECT user_id, email, phone FROM my_profile()") == [(d, email, "519-555-0101")]
+    assert len(db.q("SELECT * FROM screening_answers(%s)", (sid,))) == 6
+    assert "permission denied" not in db.fails("SELECT * FROM screening_answers(%s)", (sid,))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(other),))
+    assert "only to the donor and to clinic staff" in db.fails("SELECT * FROM screening_answers(%s)", (sid,))
+    assert "admin access only" in db.fails("SELECT * FROM audit_entries()")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert len(db.q("SELECT * FROM screening_answers(%s)", (sid,))) == 6               # clinic staff (UC-04)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
+    assert db.q("SELECT count(*) > 0 FROM audit_entries(NULL, 'user_account')") == [(True,)]
+
+
+def test_a_donation_call_carries_only_the_template(db):
+    """SE-07: calls contain no health information; staff cannot supply the text."""
+    r = db.request("O-")
+    db.donor("O-", screened=True)
+    cid = db.one("CALL send_donation_call(%s, %s, NULL, '2026-12-01')", (r, db.nurse))
+    assert db.one("SELECT message FROM donation_call WHERE call_id = %s", (cid,)) == \
+        "Riverside General is asking for donors to give red blood cells. Please book a donation at 1 River Rd on or " \
+        "before 1 Dec 2026. Accept or decline this call in Vytal."
+    assert db.q("SELECT DISTINCT message FROM notification WHERE message LIKE 'Riverside General is asking%%'") == \
+        db.q("SELECT message FROM donation_call WHERE call_id = %s", (cid,))
+
+
+# ---------------------------------------------------------------------- UC-01 2a passwords
+def test_passwords_change_only_as_bcrypt_hashes_and_end_sessions(db):
+    from vytal.auth import hash_password
+    d = db.donor()
+    h = hash_password("new-password-123")
+    db.q("CALL start_session(%s, %s)", (d, "a" * 64))
+    assert "bcrypt hash" in db.fails("CALL set_password(%s, 'plain-text-password')", (d,))
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert "does not match the session" in db.fails("CALL set_password(%s, %s)", (d, h))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    db.q("CALL set_password(%s, %s)", (d, h))
+    assert "admin access only" in db.fails("CALL admin_reset_password(%s, %s, %s)", (d, d, h))
+    db.q("RESET ROLE")
+    assert db.one("SELECT password_hash FROM user_account WHERE user_id = %s", (d,)) == h
+    assert db.one("SELECT count(*) FROM user_session WHERE user_id = %s AND ended_at IS NULL", (d,)) == 0
+
+
+def test_admin_reset_clears_a_lockout(db):
+    from vytal.auth import hash_password
+    d = db.donor()
+    db.q("UPDATE user_account SET failed_logins = 3, locked_until = now() + interval '10 minutes' WHERE user_id = %s", (d,))
+    db.q("CALL admin_reset_password(%s, %s, %s)", (db.admin, d, hash_password("reset-password-99")))
+    assert db.q("SELECT failed_logins, locked_until FROM user_account WHERE user_id = %s", (d,)) == [(0, None)]

@@ -210,7 +210,8 @@ def test_temp_table_cannot_shadow_the_audit_log(db):
     d = db.donor()
     email = db.one("SELECT email FROM user_account WHERE user_id=%s", (d,))
     db.q("SET LOCAL ROLE vytal_app")
-    db.q("CREATE TEMP TABLE audit_log (LIKE vytal.audit_log)")
+    db.q("CREATE TEMP TABLE audit_log (audit_id bigint, user_id int, action text, table_name text, record_id text, "
+         "field_name text, old_value text, new_value text, changed_at timestamptz)")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
     db.q("CALL update_donor_profile(%s, NULL, %s, NULL, 80)", (d, email))
     assert db.one("SELECT count(*) FROM pg_temp.audit_log") == 0

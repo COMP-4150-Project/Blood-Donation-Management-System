@@ -281,8 +281,7 @@ class Seeder:
         if short:
             rid = short[0][0]
             fac = dict(open_reqs)[rid]
-            call = self.one("CALL send_donation_call(%s,%s,%s)",
-                            (rid, self.staff[fac][0], "A patient near you needs blood. Please book a donation if you can."))
+            call = self.one("CALL send_donation_call(%s,%s)", (rid, self.staff[fac][0]))
             for i, (donor,) in enumerate(self.q("SELECT donor_id FROM call_recipient WHERE call_id=%s ORDER BY donor_id LIMIT 6", (call,))):
                 self.q("CALL respond_to_call(%s,%s,%s)", (call, donor, i % 3 != 2))
         flagged = self.q("SELECT o.user_id FROM donor o WHERE is_flagged AND EXISTS (SELECT 1 FROM v_blood_unit u "

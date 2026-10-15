@@ -697,8 +697,7 @@ END $$;
 -- for the next morning; two decline and the rest have not answered yet (FR-27)
 DO $$ DECLARE cid int; r text; d int; ok boolean; BEGIN
     PERFORM set_config('vytal.user_id', '3', true);
-    CALL send_donation_call(23, 3, 'O-negative donors are needed today at Riverside General Hospital. Please book a donation if you can.',
-                            NULL, cid);
+    CALL send_donation_call(23, 3, NULL, CURRENT_DATE + 1, cid);            -- SE-07 template message, for the next morning
     FOR d, ok IN VALUES (118, TRUE), (146, TRUE), (141, FALSE), (147, FALSE) LOOP
         PERFORM set_config('vytal.user_id', d::text, true);               -- UC-20: each donor answers for themselves
         CALL respond_to_call(cid, d, ok, r);
@@ -717,7 +716,7 @@ END $$;
 -- Essex County's AB- patient is one unit short; Thomas calls only the non-O- donors who match, keeping O- donors for
 -- emergencies (BR-09). One accepts, one declines, one has not answered.
 SELECT set_config('vytal.user_id', '6', false);
-CALL send_donation_call(26, 6, 'Rh-negative donors are needed at Essex County Hospital this week.', ARRAY['D-1036', 'D-1054', 'D-1057']);
+CALL send_donation_call(26, 6, ARRAY['D-1036', 'D-1054', 'D-1057']);
 DO $$ DECLARE r text; c int := (SELECT max(call_id) FROM donation_call); d int; ok boolean; BEGIN
     FOR d, ok IN VALUES (121, TRUE), (139, FALSE) LOOP
         PERFORM set_config('vytal.user_id', d::text, true);
@@ -744,8 +743,7 @@ DO $$ DECLARE rid int; got int; short int; cid int; r text; d int; ok boolean; c
     PERFORM set_config('vytal.user_id', '9', true);
     CALL submit_request(9, 'P-31120', 'O+', 'RBC', 3, 'Urgent', now() + interval '12 hours', rid, got, short);
     codes := ARRAY(SELECT donor_code::text FROM eligible_donors(rid) WHERE blood_group = 'O+' ORDER BY donor_code LIMIT 6);
-    CALL send_donation_call(rid, 9, 'O-positive donors are needed at St. Clair Community Hospital. Please book a donation this week.',
-                            codes, cid);
+    CALL send_donation_call(rid, 9, codes, CURRENT_DATE + 7, cid);
     FOR d, ok IN SELECT donor_id, row_number() OVER (ORDER BY donor_id) = 1 FROM call_recipient WHERE call_id = cid
                  ORDER BY donor_id LIMIT 2 LOOP
         PERFORM set_config('vytal.user_id', d::text, true);
@@ -760,7 +758,7 @@ DO $$ DECLARE rid int; got int; cid int; r text; d int; ok boolean; BEGIN
     INSERT INTO blood_request (requested_by, patient_ref, recipient_group, component_code, units_requested, urgency, required_by)
     VALUES (5, 'P-31092', 'B+', 'PLT', 1, 'Urgent', now() + interval '6 hours') RETURNING request_id INTO rid;
     CALL allocate(rid, got);
-    CALL send_donation_call(rid, 5, 'Platelet donors are needed at Essex County Hospital. Please book an apheresis visit.', NULL, cid);
+    CALL send_donation_call(rid, 5, NULL, NULL, cid);
     FOR d, ok IN SELECT donor_id, row_number() OVER (ORDER BY donor_id) = 1 FROM call_recipient WHERE call_id = cid
                  ORDER BY donor_id LIMIT 3 LOOP
         PERFORM set_config('vytal.user_id', d::text, true);

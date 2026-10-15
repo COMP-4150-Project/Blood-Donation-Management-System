@@ -86,7 +86,7 @@ def register_donor(email, password, first, last, phone, dob, sex, weight_kg, add
 def login(email, password):
     """SE-01 / SE-05. Returns (user_id, role); raises AccessDenied with the reason shown to the user."""
     with session() as con:
-        row = con.execute("SELECT user_id, role, password_hash FROM user_account WHERE email = lower(%s)", (email,)).fetchone()
+        row = con.execute("SELECT user_id, role, password_hash FROM login_lookup(%s)", (email,)).fetchone()   # SE-07
         if not row:
             verify_password(password, _DUMMY_HASH)
             raise AccessDenied("wrong email or password")
@@ -128,6 +128,27 @@ def complete_screening(donor_id, answers):
         return con.execute("SELECT status FROM v_donor_eligibility WHERE user_id = %s", (donor_id,)).fetchone()[0]
 
 
+def profile(user_id):
+    """UC-03: the caller's own profile with contact details (the app role reads them only through my_profile())."""
+    with session(user_id) as con:
+        cur = con.execute("SELECT * FROM my_profile()")
+        row = cur.fetchone()
+        if not row:
+            raise AccessDenied("no such account")
+        return dict(zip([c.name for c in cur.description], row))
+
+
+def change_password(user_id, old_password, new_password):
+    """UC-01 2a: the user proves the old password, then sets a new one; open sessions end, so they sign in again."""
+    _check_password(new_password)
+    with session(user_id) as con:
+        email = con.execute("SELECT email FROM my_profile()").fetchone()
+        row = con.execute("SELECT password_hash FROM login_lookup(%s)", email).fetchone() if email else None
+        if not row or not verify_password(old_password, row[0]):
+            raise AccessDenied("current password is wrong")
+        con.execute("CALL set_password(%s,%s)", (user_id, hash_password(new_password)))
+
+
 def update_profile(donor_id, phone, email, address, weight_kg):
     """UC-03 / FR-03: contact details and weight; the blood group is not editable here once verified."""
     _check_email(email)
@@ -136,6 +157,12 @@ def update_profile(donor_id, phone, email, address, weight_kg):
 
 
 # ---------------------------------------------------------------------- staff: clinic
+def screening_answers(user_id, screening_id):
+    """UC-04: a screening's answers, for the donor who gave them or for clinic staff (never in donor search, SE-07)."""
+    with session(user_id) as con:
+        return con.execute("SELECT question_id, question_text, answer FROM screening_answers(%s)", (screening_id,)).fetchall()
+
+
 def screen_donor(staff_id, donor_id, answers):
     """FR-06, staff-assisted: screening is donor-owned (UC-04, complete_screening); staff may enter it at the clinic."""
     with session(staff_id) as con:
@@ -236,11 +263,13 @@ def find_donors(staff_id, request_id):
         return con.execute("SELECT * FROM eligible_donors(%s) ORDER BY donor_code", (request_id,)).fetchall()
 
 
-def call_donors(staff_id, request_id, message, donor_codes=None):
-    """FR-26: send an in-app donation call to the chosen eligible donors (all of them if none are chosen)."""
+def call_donors(staff_id, request_id, donor_codes=None, preferred_date=None):
+    """FR-26: send an in-app donation call to the chosen eligible donors (all of them if none are chosen). The message is the
+    database's fixed template (facility, component, optional date), so a call can never carry health information (SE-07)."""
     with session(staff_id) as con:
         _own_request(con, staff_id, request_id)
-        return con.execute("CALL send_donation_call(%s,%s,%s,%s)", (request_id, staff_id, message, donor_codes)).fetchone()[0]
+        return con.execute("CALL send_donation_call(%s,%s,%s,%s)",
+                           (request_id, staff_id, donor_codes, preferred_date)).fetchone()[0]
 
 
 def inventory(staff_id):
@@ -321,6 +350,14 @@ def quarantine_donor(admin_id, donor_id):
         return con.execute(_LOOKBACK, (donor_id,)).fetchall()
 
 
+def clear_lookback(admin_id, donor_id, note):
+    """UC-22 "investigation cleared": the donor's Quarantined units go back on the shelf and the flag is lifted. Refused
+    when the donor has a permanent deferral or a positive test (then the units are discarded). Returns units released."""
+    if not (note or "").strip():
+        raise InvalidInput("note: say why the investigation was cleared")
+    return _call(admin_id, "CALL clear_lookback(%s,%s,%s)", admin_id, donor_id, note)
+
+
 _LOOKBACK_ISSUED = ("SELECT l.unit_id, l.component_code, l.issued_at, f.name AS request_facility, l.request_id "
                     "FROM v_lookback l LEFT JOIN facility f ON f.facility_id = l.request_facility "
                     "WHERE l.donor_id = %s AND l.issued_at IS NOT NULL ORDER BY l.issued_at, l.unit_id")
@@ -337,11 +374,10 @@ def lookback_issued_csv(admin_id, donor_code, path=None):
         return _csv(cur, path)
 
 
+# old and new values are readable only through audit_entries(), which checks the Admin role itself (SE-07)
 _AUDIT = ("SELECT audit_id, changed_at, user_id, action, table_name, record_id, field_name, old_value, new_value "
-          "FROM audit_log WHERE (%(user)s::int IS NULL OR user_id = %(user)s) "
-          "AND (%(table)s::text IS NULL OR table_name = %(table)s) AND (%(record)s::text IS NULL OR record_id = %(record)s) "
-          "AND (%(since)s::timestamptz IS NULL OR changed_at >= %(since)s) "
-          "AND (%(until)s::timestamptz IS NULL OR changed_at < %(until)s) ORDER BY changed_at, audit_id LIMIT %(limit)s")
+          "FROM audit_entries(%(user)s::int, %(table)s::text, %(record)s::text, %(since)s::timestamptz, %(until)s::timestamptz, "
+          "%(limit)s::int)")
 
 
 def audit_log(admin_id, user_id=None, table=None, record_id=None, since=None, until=None, limit=500):
@@ -440,6 +476,12 @@ def save_facility(admin_id, facility_id, name, facility_type, address, phone=Non
         _check_email(email)
     return _call(admin_id, "CALL save_facility(%s,%s,%s,%s,%s,%s,%s)",
                  admin_id, facility_id, name, facility_type, address, phone, email)
+
+
+def admin_reset_password(admin_id, user_id, new_password):
+    """UC-01 2a / UC-23: an Admin sets a new password for an account; it also clears a lockout and ends open sessions."""
+    _check_password(new_password)
+    return _call(admin_id, "CALL admin_reset_password(%s,%s,%s)", admin_id, user_id, hash_password(new_password))
 
 
 def set_account_active(admin_id, user_id, active):
