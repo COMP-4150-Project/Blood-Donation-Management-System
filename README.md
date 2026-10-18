@@ -157,6 +157,7 @@ pytest -q
 Expected: **347 passed** (all tests run; nothing is skipped).
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
+- Two security tests log in for real as `vytal_app` and `vytal_scheduler`. They connect to `PGHOST`/`PGPORT` and use the role passwords setup gave (`VYTAL_APP_PW` / `VYTAL_SCHEDULER_PW`, or the development defaults), so they pass with password authentication as well as with trust authentication. Export the same `VYTAL_*_PW` values for `pytest` that you gave `setup.sh`.
 
 **Sessions (SE-06).** `vytal.services.sign_in()` checks the password and opens a server-side session: the caller gets a random token and the database keeps only its SHA-256 hash in `user_session`. Every request calls `session_user(token)`, which refreshes the idle window or refuses the token once it has lapsed; `sign_out(token)` ends it at once. The timeouts (15 minutes for staff and Admins, 30 for donors) live in one place, `session_timeout()` in `sql/03_sessions.sql`. `tests/test_sessions.py` is the session test.
 
