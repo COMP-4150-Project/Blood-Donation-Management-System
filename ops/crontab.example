@@ -1,6 +1,9 @@
 # Install with: crontab -e  (edit the path and connection settings first)
 PGHOST=localhost
 PGDATABASE=vytal
+# the nightly job connects as vytal_scheduler (it can run only run_nightly_expiry); give it the password setup.sh was given,
+# or leave this out and put the password in ~/.pgpass of the cron user
+VYTAL_SCHEDULER_PW=change-me
 # nightly expiry at 00:05 (FR-20)
 5 0 * * * /path/to/Blood-Donation-Management-System/ops/nightly_expiry.sh >> /var/tmp/vytal_expiry.log 2>&1
 # daily backup with restore check at 01:00 (DI-05)

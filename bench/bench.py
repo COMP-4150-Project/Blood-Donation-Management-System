@@ -3,6 +3,7 @@
 Usage: PGDATABASE=vytal_bench ./setup.sh --no-data && python bench/bulk_data.py && python bench/bench.py
 Each mode runs inside a transaction that is rolled back, so the database is left exactly as it was.
 """
+import argparse
 import json
 import re
 import statistics
@@ -19,7 +20,7 @@ from vytal.queries import load  # noqa: E402
 INDEX_SQL = (ROOT / "sql" / "04_indexes.sql").read_text()
 INDEXES = re.findall(r"CREATE (?:UNIQUE )?INDEX (\w+)", INDEX_SQL)
 TARGET_MS = {"PR-01 eligible_donors()": 2000, "PR-02 allocate() 10 units": 1000,
-             "PR-03 inventory dashboard": 3000, "PR-05 expire_units() 50k units": 60000}
+             "PR-03 inventory dashboard": 3000, "PR-05 run_nightly_expiry() 50k units": 60000}
 RUNS = 5
 
 
@@ -66,7 +67,7 @@ def pr02(con, cur):
                           "urgency,required_by) VALUES (%s,'BENCH',%s,'RBC',10,'Routine',now()+interval '1 day') "
                           "RETURNING request_id", (staff, group)).fetchone()[0]
         t = time.perf_counter()
-        got = cur.execute("SELECT allocate(%s)", (rid,)).fetchone()[0]
+        got = cur.execute("CALL allocate(%s)", (rid,)).fetchone()[0]
         return (time.perf_counter() - t) * 1000, got
 
     in_savepoint(con, once)
@@ -101,7 +102,7 @@ def pr05(con, cur, runs):
     def once():
         n = pr05_setup(cur)
         t = time.perf_counter()
-        got = cur.execute("SELECT expire_units()").fetchone()[0]
+        got = cur.execute("CALL run_nightly_expiry()").fetchone()[0]
         return (time.perf_counter() - t) * 1000, n, got
 
     done = [in_savepoint(con, once) for _ in range(runs)]
@@ -142,7 +143,7 @@ def run_mode(con, with_indexes):
         # without indexes each alert check scans blood_unit, so one run is enough to show the difference
         runs = 3 if with_indexes else 1
         ms, n = pr05(con, cur, runs)
-        record("PR-05 expire_units() 50k units", ms, n=n, runs=runs,
+        record("PR-05 run_nightly_expiry() 50k units", ms, n=n, runs=runs,
                **({"triggers_ms": pr05_triggers(con, cur)} if with_indexes else {}))
     return out
 
@@ -153,6 +154,10 @@ def changed(before, after):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", type=Path, default=ROOT / "bench", help="folder for results.md and results.json")
+    out = ap.parse_args().out
+    out.mkdir(parents=True, exist_ok=True)
     with psycopg.connect() as con:
         con.execute("SET search_path = vytal")
         counts = dict(con.execute("SELECT 'donors', count(*) FROM donor UNION ALL SELECT 'donations', count(*) FROM donation "
@@ -160,7 +165,7 @@ def main():
                                   "UNION ALL SELECT 'requests', count(*) FROM blood_request").fetchall())
         con.commit()
         results = {"rows": counts, "indexes": INDEXES, "before": run_mode(con, False), "after": run_mode(con, True)}
-    (ROOT / "bench" / "results.json").write_text(json.dumps(results, indent=2, default=str))
+    (out / "results.json").write_text(json.dumps(results, indent=2, default=str))
     lines = [f"Dataset: {', '.join(f'{k} {v:,}' for k, v in counts.items())}. Median of {RUNS} warm runs.", "",
              "| Operation | Target | Before (ms) | After (ms) | Plan change |", "|---|---|---|---|---|"]
     for op, b in results["before"].items():
@@ -168,9 +173,9 @@ def main():
         target = f"< {TARGET_MS[op] / 1000:g} s" if op in TARGET_MS else ""
         plan = changed(b.get("scans", []), a.get("scans", [])) if "scans" in b else ""
         lines.append(f"| {op} | {target} | {b['ms']} | {a['ms']} | {plan} |")
-    lines += ["", f"PR-05 times the nightly job over {results['after']['PR-05 expire_units() 50k units']['n']:,} expired units "
+    lines += ["", f"PR-05 times the nightly job over {results['after']['PR-05 run_nightly_expiry() 50k units']['n']:,} expired units "
               "with every trigger on: median of 3 runs with indexes, 1 run without."]
-    (ROOT / "bench" / "results.md").write_text("\n".join(lines) + "\n")
+    (out / "results.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 

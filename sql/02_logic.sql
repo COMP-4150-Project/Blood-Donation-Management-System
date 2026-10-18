@@ -1,5 +1,17 @@
 SET search_path = vytal;
 
+-- ---------------------------------------------------------------- SE-04 who is really calling
+-- The role the client acts as: the SET ROLE setting, or the login role when none is set, not current_user: inside the
+-- SECURITY DEFINER procedures current_user is the owner role, while this stays the caller, and the application role cannot
+-- SET ROLE to a superuser (or to the scheduler).
+CREATE FUNCTION caller_role() RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN current_setting('role') = 'none' THEN session_user::text ELSE current_setting('role') END
+$$;
+-- True when that role is a superuser (setup, sample data, maintenance).
+CREATE FUNCTION caller_is_superuser() RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT rolsuper FROM pg_roles WHERE rolname = caller_role()
+$$;
+
 -- ---------------------------------------------------------------- subclass row must match role (EER disjoint)
 CREATE FUNCTION check_subclass_role() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -226,12 +238,15 @@ CREATE TRIGGER threshold_alert AFTER INSERT OR UPDATE OF min_units ON stock_thre
     FOR EACH ROW EXECUTE FUNCTION trg_threshold_alert();
 
 -- ---------------------------------------------------------------- FR-23 FEFO allocation with O-negative conservation, DI-01
-CREATE FUNCTION allocate(p_request int) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE r blood_request%ROWTYPE; need int; got int := 0; u record; fac int;
+-- Staff allocate for their own facility's requests; an Admin's quarantine re-allocates the requests it took units from (UC-22 3a).
+CREATE PROCEDURE allocate(p_request int, INOUT reserved_count int DEFAULT NULL) LANGUAGE plpgsql AS $$
+DECLARE r blood_request%ROWTYPE; need int; u record; fac int; actor int := require_actor('{Staff,Admin}');
 BEGIN
+    reserved_count := 0;
     SELECT * INTO r FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF r.status IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
     SELECT facility_id INTO fac FROM staff WHERE user_id = r.requested_by;
+    PERFORM require_own_facility(actor, fac, format('request %s', p_request));
     SELECT shortfall INTO need FROM v_request_status WHERE request_id = p_request;
     FOR u IN
         SELECT b.unit_id, dn.blood_group FROM blood_unit b JOIN donation dn USING (donation_id)
@@ -240,8 +255,9 @@ BEGIN
           AND (   (r.recipient_group IS NOT NULL AND EXISTS (SELECT 1 FROM compatibility c
                      WHERE c.component_code = r.component_code AND c.recipient_group = r.recipient_group
                        AND c.donor_group = dn.blood_group))
-               -- unknown group: only donor groups compatible with every recipient group (O- red cells, AB plasma)
-               OR (r.recipient_group IS NULL AND (SELECT count(*) FROM compatibility c
+               -- BR-14: an unknown group is treated as O- red cells / AB plasma only for an Emergency; any other unknown-group
+               -- request reserves nothing until the lab confirms the group (confirm_request_group), so O- is kept (BR-09)
+               OR (r.recipient_group IS NULL AND r.urgency = 'Emergency' AND (SELECT count(*) FROM compatibility c
                      WHERE c.component_code = r.component_code AND c.donor_group = dn.blood_group) = 8))
           -- O- red cells go to other groups in an Emergency, or only for what other compatible stock cannot cover
           AND (dn.blood_group <> 'O-' OR r.recipient_group = 'O-' OR r.recipient_group IS NULL
@@ -256,17 +272,20 @@ BEGIN
     LOOP
         INSERT INTO request_unit (request_id, unit_id) VALUES (p_request, u.unit_id);
         UPDATE blood_unit SET status = 'Reserved' WHERE unit_id = u.unit_id;
-        got := got + 1;
+        reserved_count := reserved_count + 1;
     END LOOP;
-    RETURN got;
 END $$;
 
 -- FR-28 issue reserved units and close; unused units go back to Available
-CREATE FUNCTION close_request(p_request int, p_cancel boolean DEFAULT FALSE) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE issued int; req int; st text;
+-- UC-21: p_units lists the reserved units actually issued; the rest go back to Available. NULL issues every reservation.
+CREATE PROCEDURE close_request(p_request int, p_cancel boolean DEFAULT FALSE, p_units text[] DEFAULT NULL,
+                               INOUT final_status text DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+DECLARE issued int; req int; st text; stray text; actor int := require_actor('{Staff}');
 BEGIN
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF st IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
+    PERFORM require_own_facility(actor, (SELECT facility_id FROM v_request WHERE request_id = p_request), format('request %s', p_request));
     IF NOT p_cancel THEN
         -- a reservation that expired before issue is released (Reserved -> Available) and the unit expires (Available -> Expired)
         UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL
@@ -276,6 +295,16 @@ BEGIN
         UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: expired while reserved'
         WHERE status = 'Available' AND expires_at <= now()
           AND unit_id IN (SELECT unit_id FROM request_unit WHERE request_id = p_request);
+        IF p_units IS NOT NULL THEN
+            SELECT u INTO stray FROM unnest(p_units) u WHERE u NOT IN
+                (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL) LIMIT 1;
+            IF stray IS NOT NULL THEN RAISE EXCEPTION 'unit % is not reserved for request %', stray, p_request; END IF;
+            UPDATE blood_unit SET status = 'Available' WHERE unit_id IN
+                (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL)
+              AND unit_id <> ALL (p_units);
+            UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL
+              AND issued_at IS NULL AND unit_id <> ALL (p_units);
+        END IF;
         UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN
             (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL);
         UPDATE request_unit SET issued_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL;
@@ -287,28 +316,14 @@ BEGIN
     SELECT count(*) FILTER (WHERE issued_at IS NOT NULL) INTO issued FROM request_unit WHERE request_id = p_request;
     st := CASE WHEN p_cancel THEN 'Cancelled' WHEN issued >= req THEN 'Fulfilled' ELSE 'Partially Fulfilled' END;
     UPDATE blood_request SET status = st, closed_at = now() WHERE request_id = p_request;
-    RETURN st;
-END $$;
-
--- FR-20 nightly expiry
-CREATE FUNCTION expire_units() RETURNS int LANGUAGE plpgsql SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
-DECLARE n int;
-BEGIN
-    -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
-    UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
-      AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
-    UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now();
-    UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
-    WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
-    GET DIAGNOSTICS n = ROW_COUNT;
-    INSERT INTO audit_log (action, table_name, record_id, new_value) VALUES ('JOB', 'blood_unit', 'expire_units', n::text);
-    RETURN n;
+    final_status := st;
 END $$;
 
 -- FR-31 quarantine every Available / Reserved unit from a donor; UC-22 3a open requests that lose a unit are re-allocated
-CREATE FUNCTION quarantine_donor(p_donor int) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE n int; r int; affected int[];
+CREATE PROCEDURE quarantine_donor(p_donor int, INOUT quarantined int DEFAULT NULL) LANGUAGE plpgsql AS $$
+DECLARE r int; got int; affected int[];
 BEGIN
+    PERFORM require_actor('{Admin}');                -- UC-22: the Admin runs the lookback
     -- lock the donor's shelf units first: a concurrent allocate() either finishes (and its reservation is seen below)
     -- or skips them (SKIP LOCKED), so no reservation can survive on a Quarantined unit
     PERFORM 1 FROM blood_unit b JOIN donation d USING (donation_id)
@@ -321,24 +336,69 @@ BEGIN
       AND unit_id IN (SELECT unit_id FROM v_blood_unit WHERE donor_id = p_donor AND status = 'Reserved');
     UPDATE blood_unit SET status = 'Quarantined', status_reason = 'Lookback'
     WHERE status IN ('Available','Reserved') AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor);
-    GET DIAGNOSTICS n = ROW_COUNT;
+    GET DIAGNOSTICS quarantined = ROW_COUNT;
     UPDATE donor SET is_flagged = TRUE WHERE user_id = p_donor;
-    FOREACH r IN ARRAY coalesce(affected, '{}') LOOP PERFORM allocate(r); END LOOP;
-    RETURN n;
+    FOREACH r IN ARRAY coalesce(affected, '{}') LOOP CALL allocate(r, got); END LOOP;
 END $$;
 
--- FR-07 / US-02 eligibility status shown to donors and staff
+-- FR-07 / BR-05 / UC-05 the eligibility function: status, the date the donor can give again, and the reason.
+-- next_eligible_date already folds in the BR-02 interval and active BR-04 deferrals (recompute_next_eligible); a failed
+-- screening shows up as the deferral it created, so the donor is Eligible again when it ends (Scenario 2). UC-05 2a: an
+-- otherwise eligible donor with no screening on record is asked to complete one, and BR-05 / FR-06: the screening must
+-- be in the 24 hours before the donation, the rule check_donation_eligible() enforces, so an older one is stale. That
+-- window ends now (or at the end of p_on when p_on is in the past), so a donor who says Eligible passes every
+-- eligibility rule here. record_donation also needs a verified blood group, which this status does not look at
+-- (can_be_called does). LANGUAGE sql so the planner inlines it.
+CREATE FUNCTION donor_eligibility(p_donor int, p_on date DEFAULT CURRENT_DATE)
+RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE AS $$
+    -- tables are schema-qualified instead of SET search_path, which would stop the planner inlining this function
+    SELECT CASE WHEN NOT a.is_active THEN 'Account inactive'
+                WHEN o.next_eligible_date = 'infinity' THEN 'Permanently deferred'    -- UC-06 2a: shown before the flag
+                WHEN o.is_flagged THEN 'Not eligible (flagged after a failed test)'
+                WHEN o.weight_kg < r.min_weight_kg THEN format('Not eligible (under %s kg)', trim_scale(r.min_weight_kg))
+                WHEN w.from_date > p_on THEN 'Not eligible until ' || w.from_date
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
+                    THEN 'Complete screening to confirm eligibility'
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id
+                                 AND s.completed_at BETWEEN w.ref - interval '24 hours' AND w.ref)
+                    THEN 'Screening older than 24 hours, repeat before donating'
+                ELSE 'Eligible' END,
+           CASE WHEN a.is_active AND NOT o.is_flagged AND o.next_eligible_date IS DISTINCT FROM 'infinity'
+                     AND o.weight_kg >= r.min_weight_kg AND w.from_date > p_on THEN w.from_date END,
+           CASE WHEN NOT a.is_active THEN 'The account is deactivated'
+                WHEN o.next_eligible_date = 'infinity' THEN
+                    (SELECT dr.description FROM vytal.deferral d JOIN vytal.deferral_reason dr USING (reason_code)
+                     WHERE d.donor_id = o.user_id AND d.end_date IS NULL ORDER BY d.deferral_id DESC LIMIT 1)
+                WHEN o.is_flagged THEN 'A test on an earlier donation was positive'
+                WHEN o.weight_kg < r.min_weight_kg THEN format('Donors must weigh at least %s kg', trim_scale(r.min_weight_kg))
+                WHEN w.from_date > p_on THEN coalesce(
+                    (SELECT dr.description FROM vytal.deferral d JOIN vytal.deferral_reason dr USING (reason_code)
+                     WHERE d.donor_id = o.user_id AND d.end_date = w.from_date ORDER BY d.deferral_id DESC LIMIT 1),
+                    CASE WHEN w.age_date = w.from_date THEN format('Donors must be at least %s', r.min_age_years)
+                         ELSE 'Minimum interval since the last donation' END)
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
+                    THEN 'No pre-donation screening on record'
+                WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id
+                                 AND s.completed_at BETWEEN w.ref - interval '24 hours' AND w.ref)
+                    THEN 'The last screening was more than 24 hours ago'
+           END
+    FROM vytal.donor o JOIN vytal.user_account a USING (user_id) JOIN vytal.eligibility_rule r USING (sex)
+    CROSS JOIN LATERAL (SELECT (o.date_of_birth + make_interval(years => r.min_age_years))::date AS age_date,
+                               greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date)
+                               AS from_date,
+                               CASE WHEN p_on < CURRENT_DATE THEN ((p_on + 1)::timestamp AT TIME ZONE 'UTC') ELSE now() END AS ref) w
+    WHERE o.user_id = p_donor
+$$;
+
+-- FR-07 / US-02 eligibility shown to donors and staff: one row per donor, read from donor_eligibility().
+-- can_be_called: eligible apart from a screening older than 24 hours. A call is an invitation and the screening is done
+-- at the visit right before the donation (UC-07, BR-05), so a stale one must not keep a donor off the call lists and
+-- counts; a donor with no screening on record at all (UC-05 2a) is still left out. status = 'Eligible' stays strict.
 CREATE VIEW v_donor_eligibility AS
 SELECT o.user_id, o.donor_code, o.blood_group, o.next_eligible_date, o.verified_by IS NOT NULL AS group_verified,
-       CASE WHEN NOT a.is_active THEN 'Account inactive'
-            WHEN o.is_flagged THEN 'Not eligible (flagged after a failed test)'
-            WHEN o.next_eligible_date = 'infinity' THEN 'Permanently deferred'
-            WHEN o.weight_kg < r.min_weight_kg THEN format('Not eligible (under %s kg)', trim_scale(r.min_weight_kg))
-            WHEN greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date) > CURRENT_DATE
-                THEN 'Not eligible until ' ||
-                     greatest(o.next_eligible_date, (o.date_of_birth + make_interval(years => r.min_age_years))::date)
-            ELSE 'Eligible' END AS status
-FROM donor o JOIN user_account a USING (user_id) JOIN eligibility_rule r USING (sex);
+       e.status, e.eligible_from, e.reason,
+       e.status IN ('Eligible', 'Screening older than 24 hours, repeat before donating') AS can_be_called
+FROM donor o CROSS JOIN LATERAL donor_eligibility(o.user_id) e;
 
 -- FR-25 eligible, compatible, group-verified donors for a request (code, group, eligibility only; no contact details)
 CREATE FUNCTION eligible_donors(p_request int)
@@ -348,7 +408,15 @@ RETURNS TABLE (donor_code varchar, blood_group varchar, next_eligible_date date)
          AND (c.recipient_group = r.recipient_group OR (r.recipient_group IS NULL AND c.recipient_group = 'AB+' AND
               (SELECT count(*) FROM compatibility c2 WHERE c2.component_code = r.component_code AND c2.donor_group = c.donor_group) = 8))
     JOIN v_donor_eligibility e ON e.blood_group = c.donor_group
-    WHERE r.request_id = p_request AND e.status = 'Eligible' AND e.group_verified
+    WHERE r.request_id = p_request AND e.can_be_called AND e.group_verified
+$$;
+
+-- UC-18 manual search: eligible, verified donors whose group can give this component to a recipient group (no request needed)
+CREATE FUNCTION donors_for_group(p_recipient text, p_component text DEFAULT 'RBC')
+RETURNS TABLE (donor_code varchar, blood_group varchar, next_eligible_date date) LANGUAGE sql STABLE AS $$
+    SELECT e.donor_code, e.blood_group, e.next_eligible_date
+    FROM compatibility c JOIN v_donor_eligibility e ON e.blood_group = c.donor_group
+    WHERE c.component_code = p_component AND c.recipient_group = p_recipient AND e.can_be_called AND e.group_verified
 $$;
 
 -- FR-30 lookback
@@ -373,8 +441,10 @@ BEGIN
                 VALUES (uid, TG_OP, TG_TABLE_NAME, rid, k, o ->> k, n ->> k);
             END IF;
         END LOOP;
-    ELSE
-        INSERT INTO audit_log (user_id, action, table_name, record_id) VALUES (uid, TG_OP, TG_TABLE_NAME, rid);
+    ELSE                                  -- FR-33: the whole row as created (INSERT) or as it was (DELETE)
+        INSERT INTO audit_log (user_id, action, table_name, record_id, old_value, new_value)
+        VALUES (uid, TG_OP, TG_TABLE_NAME, rid, (o - 'password_hash' - 'failed_logins' - 'locked_until')::text,
+                (n - 'password_hash' - 'failed_logins' - 'locked_until')::text);
     END IF;
     RETURN NULL;
 END $$;
@@ -393,6 +463,13 @@ CREATE TRIGGER audit_user AFTER INSERT OR UPDATE OR DELETE ON user_account FOR E
 CREATE TRIGGER audit_facility AFTER INSERT OR UPDATE OR DELETE ON facility FOR EACH ROW EXECUTE FUNCTION audit_row('facility_id');
 CREATE TRIGGER audit_threshold AFTER INSERT OR UPDATE OR DELETE ON stock_threshold FOR EACH ROW EXECUTE FUNCTION audit_row('facility_id', 'blood_group', 'component_code');
 CREATE TRIGGER audit_donation AFTER INSERT OR UPDATE OR DELETE ON donation FOR EACH ROW EXECUTE FUNCTION audit_row('donation_id');
+-- FR-33: staff, lab results, reservations and donation calls too, so every change to a clinical record or to who may act on it
+-- is traceable. None of these tables holds a secret (the login hash lives on user_account and audit_row skips it).
+CREATE TRIGGER audit_staff AFTER INSERT OR UPDATE OR DELETE ON staff FOR EACH ROW EXECUTE FUNCTION audit_row('user_id');
+CREATE TRIGGER audit_test_result AFTER INSERT OR UPDATE OR DELETE ON test_result FOR EACH ROW EXECUTE FUNCTION audit_row('donation_id', 'test_code');
+CREATE TRIGGER audit_request_unit AFTER INSERT OR UPDATE OR DELETE ON request_unit FOR EACH ROW EXECUTE FUNCTION audit_row('request_id', 'unit_id');
+CREATE TRIGGER audit_call AFTER INSERT OR UPDATE OR DELETE ON donation_call FOR EACH ROW EXECUTE FUNCTION audit_row('call_id');
+CREATE TRIGGER audit_call_recipient AFTER INSERT OR UPDATE OR DELETE ON call_recipient FOR EACH ROW EXECUTE FUNCTION audit_row('call_id', 'donor_id');
 
 -- ---------------------------------------------------------------- UC-24 2a every recipient group keeps a compatible donor group
 -- Checked per statement for the components the statement touched (a new component with no rules yet does not block
@@ -439,7 +516,7 @@ CREATE TRIGGER donor_group_guard BEFORE UPDATE OF blood_group, verified_by, veri
 CREATE FUNCTION guard_verified_insert() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE actor int := nullif(current_setting('vytal.user_id', true), '')::int;
 BEGIN
-    IF NEW.verified_by IS NOT NULL AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+    IF NEW.verified_by IS NOT NULL AND NOT caller_is_superuser()
        AND NOT EXISTS (SELECT 1 FROM staff s JOIN user_account a USING (user_id)
                        WHERE s.user_id = actor AND a.is_active AND s.user_id = NEW.verified_by) THEN
         RAISE EXCEPTION 'only staff can verify a blood group, as themselves';

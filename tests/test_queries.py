@@ -24,6 +24,14 @@ def test_query_runs_returns_rows_and_is_fast(sdb, name):
     assert time.perf_counter() - t < 2.0             # PR-01's 2-second bound; measured timings are in bench/
 
 
+@pytest.mark.parametrize("name", sorted(QUERIES))
+def test_query_runs_as_the_read_only_report_role(sdb, name):
+    """FR-34 / SE-04: dashboards connect as vytal_report, so every key query must work with its read-only grants."""
+    sdb.cur.execute("SET LOCAL ROLE vytal_report")
+    sdb.cur.execute(QUERIES[name].sql)
+    assert sdb.cur.fetchall()
+
+
 def test_every_query_names_a_requirement():
     assert all(q.serves and q.why and q.title for q in QUERIES.values())
 
@@ -51,8 +59,7 @@ def test_q03_only_eligible_compatible_donors(sdb):
     req = out[0]["request_id"]
     rec, comp = sdb.q("SELECT recipient_group, component_code FROM blood_request WHERE request_id=%s", (req,))[0]
     for r in out:
-        status = sdb.one("SELECT status FROM v_donor_eligibility WHERE donor_code=%s", (r["donor_code"],))
-        assert status == "Eligible"
+        assert sdb.one("SELECT can_be_called FROM v_donor_eligibility WHERE donor_code=%s", (r["donor_code"],))
         allowed = sdb.one("SELECT count(*) FROM compatibility WHERE component_code=%s AND donor_group=%s "
                           "AND (recipient_group=%s OR %s::varchar IS NULL)", (comp, r["blood_group"], rec, rec))
         assert allowed >= (1 if rec else 8)

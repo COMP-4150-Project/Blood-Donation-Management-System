@@ -1,5 +1,7 @@
 """SE-04 least privilege, SE-08 / DI-04 history that cannot be rewritten."""
 import json
+import os
+import re
 import pytest
 
 
@@ -24,11 +26,16 @@ def test_app_role_cannot_drop_tables(app):
     assert "must be owner" in app.fails("DROP TABLE donor")
 
 
-def test_app_role_still_produces_audit_rows_through_triggers(app):
-    d = app.one("SELECT user_id FROM donor LIMIT 1")
-    app.q("UPDATE donor SET weight_kg = weight_kg + 1 WHERE user_id = %s", (d,))
-    app.q("RESET ROLE")
-    assert app.one("SELECT count(*) FROM audit_log WHERE table_name='donor' AND field_name='weight_kg' AND record_id=%s", (str(d),)) == 1
+def test_app_role_still_produces_audit_rows_through_procedures(db):
+    """SE-08: a change made through a procedure is audited under the acting user, though the app cannot write audit_log."""
+    d = db.donor()
+    email = db.one("SELECT email FROM user_account WHERE user_id=%s", (d,))
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    db.q("CALL update_donor_profile(%s,'519-555-0100',%s,'2 Main St',81)", (d, email))
+    db.q("RESET ROLE")
+    assert db.q("SELECT user_id FROM audit_log WHERE table_name='donor' AND field_name='weight_kg' AND record_id=%s",
+                (str(d),)) == [(d,)]
 
 
 def test_report_role_is_read_only_and_cannot_see_password_hashes(db):
@@ -38,10 +45,20 @@ def test_report_role_is_read_only_and_cannot_see_password_hashes(db):
     assert "permission denied" in db.fails("UPDATE facility SET name = 'x'")
 
 
-def test_app_role_can_run_every_routine_and_public_none(db):
-    """GRANT/REVOKE ... ON ALL ROUTINES covers procedures as well as functions."""
+APP_FUNCTIONS = {"donor_eligibility(integer,date)", "eligible_donors(integer)", "donors_for_group(text,text)",
+                 "login_lookup(text)", "my_profile()", "screening_answers(integer)",
+                 "audit_entries(integer,text,text,timestamp with time zone,timestamp with time zone,integer)"}
+INTERNAL_PROCEDURES = ["release_tested(integer,integer)"]
+
+
+def test_app_role_runs_every_procedure_and_only_the_read_only_functions(db):
+    """SE-04: the app may CALL every procedure except internal steps, and only the read-only and scoped functions."""
+    can = {(sig, kind) for sig, kind in db.q(
+        "SELECT p.oid::regprocedure::text, p.prokind FROM pg_proc p WHERE p.pronamespace = 'vytal'::regnamespace "
+        "AND has_function_privilege('vytal_app', p.oid, 'EXECUTE')")}
+    assert {s for s, k in can if k == "f"} == APP_FUNCTIONS
     assert db.q("SELECT p.oid::regprocedure::text FROM pg_proc p WHERE p.pronamespace = 'vytal'::regnamespace "
-                "AND NOT has_function_privilege('vytal_app', p.oid, 'EXECUTE')") == []
+                "AND p.prokind = 'p' AND NOT has_function_privilege('vytal_app', p.oid, 'EXECUTE')") == [(s,) for s in INTERNAL_PROCEDURES]
     assert db.q("SELECT p.oid::regprocedure::text FROM pg_proc p, aclexplode(p.proacl) a "
                 "WHERE p.pronamespace = 'vytal'::regnamespace AND a.grantee = 0") == []
 
@@ -55,14 +72,17 @@ def test_routines_refuse_a_user_id_that_is_not_the_session_user(db):
     d, u = db.donor(), db.stock("O+")[0]
     db.q("SET LOCAL ROLE vytal_app")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
-    for sql, args in (("SELECT create_admin(%s,'evil@v.ca','x','E','V')", (db.admin,)),
-                      ("SELECT create_staff(%s,'evil2@v.ca','x','E','V',%s,'Nurse')", (db.admin, db.fac_h)),
-                      ("SELECT set_threshold(%s,%s,'O-','RBC',9)", (db.nurse, db.fac_h)),
-                      ("SELECT discard_unit(%s,%s,'x')", (db.nurse, u)),
-                      ("SELECT record_deferral(%s,%s,'HIV')", (db.nurse, d))):
+    for sql, args in (("CALL create_admin(%s,'evil@v.ca','x','E','V')", (db.admin,)),
+                      ("CALL create_staff(%s,'evil2@v.ca','x','E','V',%s,'Nurse')", (db.admin, db.fac_h)),
+                      ("CALL set_threshold(%s,%s,'O-','RBC',9)", (db.nurse, db.fac_h)),
+                      ("CALL discard_unit(%s,%s,'x')", (db.nurse, u)),
+                      ("CALL record_deferral(%s,%s,'HIV')", (db.nurse, d)),
+                      ("CALL verify_blood_group(%s,%s,'O-')", (db.nurse, d)),
+                      ("CALL submit_request(%s,'P-1','O+','RBC',1,'Routine',now())", (db.nurse,)),
+                      ("CALL confirm_request_group(%s,1,'O+')", (db.nurse,))):
         assert "acting user does not match the session" in db.fails(sql, args)
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
-    assert db.one("SELECT create_admin(%s,'ok@v.ca','x','O','K')", (db.admin,)) > 0
+    assert db.one("CALL create_admin(%s,'ok@v.ca','x','O','K')", (db.admin,)) > 0
 
 
 def test_report_role_cannot_read_audit_values(db):
@@ -86,10 +106,10 @@ def test_screening_is_entered_by_the_donor_or_staff(db):
     db.q("SET LOCAL ROLE vytal_app")
     for who in (other, db.admin):
         db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
-        assert "entered by the donor or by staff" in db.fails("SELECT submit_screening(%s,%s)", (d, answers))
+        assert re.search("entered by the donor or by staff|donor or staff access only", db.fails("CALL submit_screening(%s,%s)", (d, answers)))
     for who in (d, db.nurse):
         db.q("SELECT set_config('vytal.user_id', %s, true)", (str(who),))
-        assert db.one("SELECT submit_screening(%s,%s)", (d, answers)) > 0
+        assert db.one("CALL submit_screening(%s,%s)", (d, answers)) > 0
 
 
 def test_only_the_called_donor_answers_a_call(db):
@@ -97,17 +117,276 @@ def test_only_the_called_donor_answers_a_call(db):
     d, other = db.donor(), db.donor()
     db.q("SET LOCAL ROLE vytal_app")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(other),))
-    assert "acting user does not match the session" in db.fails("SELECT respond_to_call(1,%s,TRUE)", (d,))
+    assert "acting user does not match the session" in db.fails("CALL respond_to_call(1,%s,TRUE)", (d,))
 
 
 def test_a_donor_cannot_be_inserted_already_verified(db):
-    """FR-09: as vytal_app, only the acting staff member can be recorded as verifier on a new donor row."""
+    """FR-09: the app cannot insert donor rows at all; inside the procedures (owner role) only the acting staff can verify."""
     uid = db.user("Donor")
     row = "INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg,blood_group,verified_by,verified_at) " \
           "VALUES (%s,'D-9001','1990-01-01','F',60,'A+',%s,now())"
     db.q("SET LOCAL ROLE vytal_app")
+    assert "permission denied" in db.fails(row, (uid, db.nurse))
+    db.q("SET LOCAL ROLE vytal_owner")                                  # what a SECURITY DEFINER procedure runs as
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(uid),))
     assert "only staff can verify" in db.fails(row, (uid, db.nurse))
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
     db.q(row, (uid, db.nurse))
     assert db.one("SELECT verified_by FROM donor WHERE user_id=%s", (uid,)) == db.nurse
+
+
+def test_app_role_cannot_write_any_table(db):
+    """SE-04: no INSERT, UPDATE or DELETE privilege on any table or view for the application role."""
+    assert db.q("SELECT c.relname, p.priv FROM pg_class c CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) p(priv) "
+                "WHERE c.relnamespace = 'vytal'::regnamespace AND c.relkind IN ('r','v') "
+                "AND has_table_privilege('vytal_app', c.oid, p.priv)") == []
+    assert db.q("WITH s AS MATERIALIZED (SELECT oid, relname FROM pg_class WHERE relnamespace = 'vytal'::regnamespace AND relkind = 'S') "
+                "SELECT relname FROM s WHERE has_sequence_privilege('vytal_app', s.oid, 'USAGE')") == []
+
+
+@pytest.mark.parametrize("sql", ["UPDATE user_account SET role = 'Admin' WHERE user_id = (SELECT min(user_id) FROM donor)",
+                                 "UPDATE donor SET is_flagged = NOT is_flagged",
+                                 "UPDATE compatibility SET donor_group = 'O-'",
+                                 "INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by) VALUES (1, 'TATTOO', CURRENT_DATE, 1)"])
+def test_app_role_cannot_bypass_the_procedures(app, sql):
+    assert "permission denied" in app.fails(sql)
+
+
+@pytest.mark.parametrize("sql", ["SELECT recompute_next_eligible(1)", "SELECT refresh_alert(1, 'O-', 'RBC')",
+                                 "SELECT require_role(1, 'Admin')", "SELECT require_session_user(1)",
+                                 "SELECT caller_is_superuser()", "SELECT session_timeout('Admin')"])
+def test_app_role_cannot_call_internal_helpers(app, sql):
+    assert "permission denied" in app.fails(sql)
+
+
+def test_app_role_cannot_borrow_a_superuser_exemption(db):
+    """The exemption reads the role the client acts as (SET ROLE, else the login role). A vytal_app login is no superuser and
+    belongs to no role, so it can never SET ROLE to a superuser or to the owner; the owner role cannot log in."""
+    assert db.q("SELECT rolname, rolsuper, rolcanlogin FROM pg_roles WHERE rolname IN ('vytal_app','vytal_owner') ORDER BY 1") == \
+        [("vytal_app", False, True), ("vytal_owner", False, False)]
+    assert db.one("SELECT count(*) FROM pg_auth_members WHERE member = 'vytal_app'::regrole") == 0
+    assert db.one("SELECT caller_is_superuser()") is True                 # this superuser test session
+    db.q("SET LOCAL ROLE vytal_owner")                                      # acting as another role turns the exemption off
+    assert db.one("SELECT caller_is_superuser()") is False
+
+
+# ---------------------------------------------------------------------- SE-02 procedures that take no user id check the session
+def _caller_world(db):
+    """A hospital donation and request owned by the nurse, as the owner, before switching to the app role."""
+    d = db.donor("O+", screened=True)
+    dn = db.donate(d)
+    return d, dn, db.request("O+")
+
+
+CALLER_CHECKED = [
+    ("quarantine_donor", "CALL quarantine_donor(%(d)s)"),
+    ("close_request", "CALL close_request(%(r)s)"),
+    ("allocate", "CALL allocate(%(r)s)"),
+    ("send_donation_call", "CALL send_donation_call(%(r)s, %(nurse)s)"),
+    ("record_donation", "CALL record_donation(%(d)s, %(nurse)s, 'WB', 450, 140)"),
+    ("separate_donation", "CALL separate_donation(%(dn)s, ARRAY['RBC'])"),
+    ("record_tests", "CALL record_tests(%(dn)s, '{\"HIV\": \"Negative\"}')"),
+]
+
+
+@pytest.mark.parametrize("name,sql", CALLER_CHECKED, ids=[n for n, _ in CALLER_CHECKED])
+def test_procedures_refuse_a_donor_session_and_no_session(db, name, sql):
+    """SE-02: as vytal_app, a donor's session or a connection with no acting user cannot run a staff or Admin command."""
+    d, dn, r = _caller_world(db)
+    args = {"d": d, "dn": dn, "r": r, "nurse": db.nurse}
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    assert re.search("access only|does not match the session", db.fails(sql, args)), name
+    db.q("SELECT set_config('vytal.user_id', '', true)")
+    assert re.search("no acting user|does not match the session", db.fails(sql, args)), name
+
+
+@pytest.mark.parametrize("name,sql", [c for c in CALLER_CHECKED if c[0] != "record_donation"],
+                         ids=[n for n, _ in CALLER_CHECKED if n != "record_donation"])
+def test_procedures_refuse_staff_from_another_facility(db, name, sql):
+    """SE-02: the blood centre's phlebotomist cannot act on the hospital's requests or donations (quarantine is Admin-only)."""
+    d, dn, r = _caller_world(db)
+    args = {"d": d, "dn": dn, "r": r, "nurse": db.phleb}
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.phleb),))
+    assert re.search("another facility|admin access only", db.fails(sql, args)), name
+
+
+def test_own_staff_and_admin_pass_the_caller_checks(db):
+    d, dn, r = _caller_world(db)
+    db.stock("O+")
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert db.one("CALL allocate(%s)", (r,)) == 1
+    assert db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,)) == [f"U{dn}-RBC"]
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
+    assert db.one("CALL quarantine_donor(%s)", (d,)) == 0
+
+
+def test_release_tested_is_internal(db):
+    db.q("SET LOCAL ROLE vytal_app")
+    assert "permission denied" in db.fails("CALL release_tested(1)")
+
+
+# ---------------------------------------------------------------------- SE-07 minimum disclosure for the application role
+@pytest.mark.parametrize("sql", [
+    "SELECT password_hash FROM user_account", "SELECT failed_logins FROM user_account", "SELECT locked_until FROM user_account",
+    "SELECT email FROM user_account", "SELECT phone FROM user_account", "SELECT address FROM donor",
+    "SELECT * FROM screening_answer", "SELECT old_value FROM audit_log", "SELECT new_value FROM audit_log",
+    "SELECT token_hash FROM user_session"])
+def test_app_role_cannot_read_protected_columns(db, sql):
+    db.q("SET LOCAL ROLE vytal_app")
+    assert "permission denied" in db.fails(sql)
+
+
+def test_scoped_functions_hand_out_only_the_callers_data(db):
+    d, other = db.donor(), db.donor()
+    db.q("UPDATE user_account SET phone = '519-555-0101' WHERE user_id = %s", (d,))
+    sid = db.one("CALL submit_screening(%s, %s)", (d, json.dumps(db.one(ANSWERS))))
+    email = db.one("SELECT email FROM user_account WHERE user_id = %s", (d,))
+    db.q("SET LOCAL ROLE vytal_app")
+    assert db.q("SELECT user_id, role FROM login_lookup(%s)", (email.upper(),)) == [(d, "Donor")]
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    assert db.q("SELECT user_id, email, phone FROM my_profile()") == [(d, email, "519-555-0101")]
+    assert len(db.q("SELECT * FROM screening_answers(%s)", (sid,))) == 6
+    assert "permission denied" not in db.fails("SELECT * FROM screening_answers(%s)", (sid,))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(other),))
+    assert "only to the donor and to clinic staff" in db.fails("SELECT * FROM screening_answers(%s)", (sid,))
+    assert "admin access only" in db.fails("SELECT * FROM audit_entries()")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert len(db.q("SELECT * FROM screening_answers(%s)", (sid,))) == 6               # clinic staff (UC-04)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
+    assert db.q("SELECT count(*) > 0 FROM audit_entries(NULL, 'user_account')") == [(True,)]
+
+
+def test_a_donation_call_carries_only_the_template(db):
+    """SE-07: calls contain no health information; staff cannot supply the text."""
+    r = db.request("O-")
+    db.donor("O-", screened=True)
+    cid = db.one("CALL send_donation_call(%s, %s, NULL, '2026-12-01')", (r, db.nurse))
+    assert db.one("SELECT message FROM donation_call WHERE call_id = %s", (cid,)) == \
+        "Riverside General is asking for donors to give red blood cells. Please book a donation at 1 River Rd on or " \
+        "before 1 Dec 2026. Accept or decline this call in Vytal."
+    assert db.q("SELECT DISTINCT message FROM notification WHERE message LIKE 'Riverside General is asking%%'") == \
+        db.q("SELECT message FROM donation_call WHERE call_id = %s", (cid,))
+
+
+# ---------------------------------------------------------------------- UC-01 2a passwords
+def test_passwords_change_only_as_bcrypt_hashes_and_end_sessions(db):
+    from vytal.auth import hash_password
+    d = db.donor()
+    h = hash_password("new-password-123")
+    db.q("CALL start_session(%s, %s)", (d, "a" * 64))
+    assert "bcrypt hash" in db.fails("CALL set_password(%s, 'plain-text-password')", (d,))
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    assert "does not match the session" in db.fails("CALL set_password(%s, %s)", (d, h))
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    db.q("CALL set_password(%s, %s)", (d, h))
+    assert "admin access only" in db.fails("CALL admin_reset_password(%s, %s, %s)", (d, d, h))
+    db.q("RESET ROLE")
+    assert db.one("SELECT password_hash FROM user_account WHERE user_id = %s", (d,)) == h
+    assert db.one("SELECT count(*) FROM user_session WHERE user_id = %s AND ended_at IS NULL", (d,)) == 0
+
+
+def test_admin_reset_clears_a_lockout(db):
+    from vytal.auth import hash_password
+    d = db.donor()
+    db.q("UPDATE user_account SET failed_logins = 3, locked_until = now() + interval '10 minutes' WHERE user_id = %s", (d,))
+    db.q("CALL admin_reset_password(%s, %s, %s)", (db.admin, d, hash_password("reset-password-99")))
+    assert db.q("SELECT failed_logins, locked_until FROM user_account WHERE user_id = %s", (d,)) == [(0, None)]
+
+
+# ---------------------------------------------------------------------- SE-02 run_nightly_expiry() needs an Admin or the scheduler
+def test_nightly_expiry_refused_without_an_acting_user(db):
+    db.q("SET LOCAL ROLE vytal_app")
+    assert "no acting user" in db.fails("CALL run_nightly_expiry()")
+
+
+def test_nightly_expiry_refused_for_a_donor_or_staff_session(db):
+    d = db.donor()
+    nurse = db.nurse
+    db.q("SET LOCAL ROLE vytal_app")
+    for uid in (d, nurse):
+        db.q("SELECT set_config('vytal.user_id', %s, true)", (str(uid),))
+        assert "admin access only" in db.fails("CALL run_nightly_expiry()")
+    db.q("RESET ROLE")
+    assert db.one("SELECT count(*) FROM audit_log WHERE action='JOB'") == 0
+
+
+def test_nightly_expiry_runs_for_an_admin_session_and_records_who(db):
+    db.stock("A+", comps=("PLT",), days_ago=6)
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
+    assert db.one("CALL run_nightly_expiry()") == 1
+    db.q("RESET ROLE")
+    assert db.q("SELECT user_id, new_value FROM audit_log WHERE action='JOB' AND record_id='run_nightly_expiry'") == [(db.admin, "1")]
+
+
+def test_nightly_expiry_refused_for_a_deactivated_admin(db):
+    db.q("UPDATE user_account SET is_active = FALSE WHERE user_id = %s", (db.admin,))
+    db.q("SET LOCAL ROLE vytal_app")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
+    assert "admin access only" in db.fails("CALL run_nightly_expiry()")
+
+
+def test_scheduler_role_runs_the_job_and_nothing_else(db):
+    db.stock("A+", comps=("PLT",), days_ago=6)
+    db.q("SET LOCAL ROLE vytal_scheduler")
+    assert db.one("CALL vytal.run_nightly_expiry()") == 1
+    for sql in ("SELECT count(*) FROM vytal.donor", "UPDATE vytal.blood_unit SET status = 'Discarded'",
+                "SELECT * FROM vytal.audit_log", "CALL vytal.allocate(1)", "CALL vytal.quarantine_donor(1, 1)"):
+        assert "permission denied" in db.fails(sql), sql
+    db.q("RESET ROLE")
+    assert db.q("SELECT user_id, new_value FROM audit_log WHERE action='JOB' AND record_id='run_nightly_expiry'") == [(None, "1")]
+
+
+def login(dbname, role):
+    """A real login as one of the three application roles. Host, port and password follow setup.sh (the VYTAL_*_PW values or its
+    development defaults); PGPASSWORD is the superuser's and must not be sent for these roles."""
+    import psycopg
+    pw = {"vytal_app": ("VYTAL_APP_PW", "vytal_app_dev"), "vytal_report": ("VYTAL_REPORT_PW", "vytal_report_dev"),
+          "vytal_scheduler": ("VYTAL_SCHEDULER_PW", "vytal_scheduler_dev")}[role]
+    return psycopg.connect(dbname=dbname, user=role, password=os.environ.get(pw[0], pw[1]),
+                           host=os.environ.get("PGHOST"), port=os.environ.get("PGPORT"))
+
+
+def test_scheduler_can_log_in_and_run_the_job(empty_db):
+    """The login ops/nightly_expiry.sh uses, over a real connection (rolled back, so no JOB row is left behind)."""
+    import psycopg
+    with login(empty_db, "vytal_scheduler") as c:
+        assert c.execute("CALL vytal.run_nightly_expiry()").fetchone()[0] == 0
+        c.rollback()
+        assert c.execute("SELECT rolcanlogin, rolsuper FROM pg_roles WHERE rolname = current_user").fetchone() == (True, False)
+
+
+def test_application_login_cannot_become_the_scheduler(empty_db):
+    """A real vytal_app connection: it cannot SET ROLE to the scheduler, and without an Admin session the job is refused."""
+    import psycopg
+    with login(empty_db, "vytal_app") as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("SET ROLE vytal_scheduler")
+        c.rollback()
+        with pytest.raises(psycopg.errors.RaiseException, match="no acting user"):
+            c.execute("CALL vytal.run_nightly_expiry()")
+        c.rollback()
+        c.execute("SELECT set_config('vytal.user_id', '1', true)")        # a user id that is not an Admin
+        with pytest.raises(psycopg.errors.RaiseException, match="Admin access only"):
+            c.execute("CALL vytal.run_nightly_expiry()")
+
+
+# ---------------------------------------------------------------------- FR-33 audit privacy still holds with the extra audited tables
+AUDITED_NEW = ["staff", "test_result", "request_unit", "donation_call", "call_recipient"]
+
+
+def test_audit_values_stay_hidden_from_app_and_report_roles_for_the_new_tables(db):
+    dn = db.donate(db.donor())
+    db.q("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))
+    db.q("CALL record_tests(%s, '{\"HIV\":\"Negative\"}')", (dn,))
+    assert db.one("SELECT count(*) FROM audit_log WHERE table_name = 'test_result'") == 1
+    for role in ("vytal_app", "vytal_report"):
+        db.q(f"SET LOCAL ROLE {role}")
+        assert db.q("SELECT table_name, field_name FROM audit_log WHERE table_name = 'test_result'") == [("test_result", None)]
+        for sql in ("SELECT new_value FROM audit_log", "SELECT old_value FROM audit_log", "SELECT * FROM audit_log"):
+            assert "permission denied" in db.fails(sql), (role, sql)
+        db.q("RESET ROLE")
