@@ -1,5 +1,6 @@
 """SE-04 least privilege, SE-08 / DI-04 history that cannot be rewritten."""
 import json
+import os
 import re
 import pytest
 
@@ -340,10 +341,20 @@ def test_scheduler_role_runs_the_job_and_nothing_else(db):
     assert db.q("SELECT user_id, new_value FROM audit_log WHERE action='JOB' AND record_id='run_nightly_expiry'") == [(None, "1")]
 
 
+def login(dbname, role):
+    """A real login as one of the three application roles. Host, port and password follow setup.sh (the VYTAL_*_PW values or its
+    development defaults); PGPASSWORD is the superuser's and must not be sent for these roles."""
+    import psycopg
+    pw = {"vytal_app": ("VYTAL_APP_PW", "vytal_app_dev"), "vytal_report": ("VYTAL_REPORT_PW", "vytal_report_dev"),
+          "vytal_scheduler": ("VYTAL_SCHEDULER_PW", "vytal_scheduler_dev")}[role]
+    return psycopg.connect(dbname=dbname, user=role, password=os.environ.get(pw[0], pw[1]),
+                           host=os.environ.get("PGHOST"), port=os.environ.get("PGPORT"))
+
+
 def test_scheduler_can_log_in_and_run_the_job(empty_db):
     """The login ops/nightly_expiry.sh uses, over a real connection (rolled back, so no JOB row is left behind)."""
     import psycopg
-    with psycopg.connect(dbname=empty_db, user="vytal_scheduler") as c:
+    with login(empty_db, "vytal_scheduler") as c:
         assert c.execute("CALL vytal.run_nightly_expiry()").fetchone()[0] == 0
         c.rollback()
         assert c.execute("SELECT rolcanlogin, rolsuper FROM pg_roles WHERE rolname = current_user").fetchone() == (True, False)
@@ -352,7 +363,7 @@ def test_scheduler_can_log_in_and_run_the_job(empty_db):
 def test_application_login_cannot_become_the_scheduler(empty_db):
     """A real vytal_app connection: it cannot SET ROLE to the scheduler, and without an Admin session the job is refused."""
     import psycopg
-    with psycopg.connect(dbname=empty_db, user="vytal_app") as c:
+    with login(empty_db, "vytal_app") as c:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             c.execute("SET ROLE vytal_scheduler")
         c.rollback()

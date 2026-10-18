@@ -22,14 +22,16 @@ def test_every_deferral_reason_and_component_appears(sdb):
 
 
 def test_history_load_is_not_audited(sdb):
-    """FR-33: the audit log starts with today's live actions; the migrated history adds no INSERT rows."""
+    """FR-33: the audit log starts with today's live actions; the migrated history adds no INSERT rows.
+    History is anything older than the first audit entry (the load time), not older than CURRENT_DATE, so a build that
+    straddles midnight cannot turn a live action into history."""
     assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'facility'") == 0
     assert sdb.one("SELECT count(*) FROM audit_log a JOIN donation d ON d.donation_id::text = a.record_id "
-                   "WHERE a.action = 'INSERT' AND a.table_name = 'donation' AND d.donated_at < CURRENT_DATE") == 0
+                   "WHERE a.action = 'INSERT' AND a.table_name = 'donation' AND d.donated_at < (SELECT min(changed_at) FROM audit_log) - interval '1 hour'") == 0
     assert sdb.one("SELECT count(*) FROM audit_log a JOIN user_account u ON u.user_id::text = a.record_id "
-                   "WHERE a.action = 'INSERT' AND a.table_name IN ('user_account','donor') AND u.created_at < CURRENT_DATE") == 0
+                   "WHERE a.action = 'INSERT' AND a.table_name IN ('user_account','donor') AND u.created_at < (SELECT min(changed_at) FROM audit_log) - interval '1 hour'") == 0
     assert sdb.one("SELECT count(*) FROM audit_log a JOIN v_blood_unit u ON u.unit_id = a.record_id "
-                   "WHERE a.action = 'INSERT' AND a.table_name = 'blood_unit' AND u.collected_at < CURRENT_DATE") == 0
+                   "WHERE a.action = 'INSERT' AND a.table_name = 'blood_unit' AND u.collected_at < (SELECT min(changed_at) FROM audit_log) - interval '1 hour'") == 0
     assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'blood_request'") == 7   # today's open requests
     assert sdb.one("SELECT count(*) FROM audit_log WHERE action = 'INSERT' AND table_name = 'deferral' "
                    "AND user_id = 102") == 1                     # the donor's own screening today (UC-04)
