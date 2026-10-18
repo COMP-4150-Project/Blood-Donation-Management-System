@@ -47,7 +47,7 @@ def test_verification_needs_both_columns_and_a_group(db):
 
 def test_one_unit_per_component_per_donation(db):
     dn = db.donate(db.donor())
-    db.q("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))
+    db.q("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))
     assert "unique" in db.fails("INSERT INTO blood_unit (unit_id,donation_id,component_code) VALUES ('DUP',%s,'RBC')", (dn,))
 
 

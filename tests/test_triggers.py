@@ -9,13 +9,19 @@ def next_in(db, donor):
 
 # ---------------------------------------------------------------------- FR-07 / FR-11 eligibility before a donation
 @pytest.mark.parametrize("kwargs, hb, needle", [
-    (dict(age=16), 140, "under 17"),
     (dict(kg=45), 140, "50 kg"),
     (dict(sex="M"), 128, "hemoglobin"),
     (dict(sex="F"), 124, "hemoglobin"),
 ])
 def test_threshold_rules(db, kwargs, hb, needle):
     assert needle in db.fails(INSERT_DONATION.replace(",140)", ",%s)"), (db.donor(**kwargs), db.nurse, 450, hb))
+
+
+def test_donation_refused_below_the_minimum_age(db):
+    """BR-01: a 17-year-old registered under the old rule cannot donate once an Admin raises the minimum to 18 (MA-01)."""
+    d = db.donor(age=17)
+    db.q("UPDATE eligibility_rule SET min_age_years = 18")
+    assert "under 18" in db.fails(INSERT_DONATION, (d, db.nurse, 450))
 
 
 def test_thresholds_are_data_not_code(db):
@@ -77,7 +83,7 @@ def test_deferral_rules_and_eligibility_dates(db):
 def test_units_get_expiry_location_and_donation_status(db):
     dn = db.donate(db.donor(), staff=db.phleb)
     assert db.one("SELECT status FROM donation WHERE donation_id=%s", (dn,)) == "Awaiting separation"
-    db.q("SELECT separate_donation(%s, ARRAY['RBC','PLASMA','PLT'])", (dn,))
+    db.q("CALL separate_donation(%s, ARRAY['RBC','PLASMA','PLT'])", (dn,))
     assert db.one("SELECT status FROM donation WHERE donation_id=%s", (dn,)) == "Separated"
     days = dict(db.q("SELECT component_code, round(extract(epoch FROM expires_at - collected_at) / 86400)::int "
                      "FROM v_blood_unit WHERE donation_id=%s", (dn,)))
@@ -93,13 +99,13 @@ def test_expiry_before_collection_rejected(db):
 
 def test_collected_unit_cannot_be_quarantined(db):
     """BR-12: lookback quarantine applies to Available and Reserved units only (Table 1)."""
-    unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (db.donate(db.donor()),))
+    unit = db.one("CALL separate_donation(%s, ARRAY['RBC'])", (db.donate(db.donor()),))[0]
     assert "invalid unit status" in db.fails("UPDATE blood_unit SET status='Quarantined' WHERE unit_id=%s", (unit,))
 
 
 def test_release_needs_every_test_negative(db):
     dn = db.donate(db.donor())
-    unit = db.one("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))
+    unit = db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))[0]
     assert "tests missing" in db.fails("UPDATE blood_unit SET status='Available' WHERE unit_id=%s", (unit,))
     db.q("INSERT INTO test_result (donation_id,test_code,result) VALUES (%s,'HIV','Negative')", (dn,))
     assert "tests missing" in db.fails("UPDATE blood_unit SET status='Available' WHERE unit_id=%s", (unit,))
@@ -122,7 +128,7 @@ def test_invalid_status_changes(db, path, bad):
 def test_positive_test_discards_flags_and_notifies(db):
     d = db.donor()
     dn = db.donate(d)
-    db.q("SELECT separate_donation(%s, ARRAY['RBC','PLASMA'])", (dn,))
+    db.q("CALL separate_donation(%s, ARRAY['RBC','PLASMA'])", (dn,))
     db.q("INSERT INTO test_result (donation_id,test_code,result) VALUES (%s,'HBV','Positive')", (dn,))
     assert db.q("SELECT DISTINCT status FROM blood_unit WHERE donation_id=%s", (dn,)) == [("Discarded",)]
     assert db.one("SELECT count(*) FROM wastage_record w JOIN blood_unit u USING (unit_id) WHERE donation_id=%s AND cause='Discarded'", (dn,)) == 2
@@ -149,9 +155,9 @@ def test_alert_opens_and_clears_with_stock(db):
     units = db.stock("O+", n=2)
     assert open_alerts(db, "O+") == 0
     r = db.request("O+")
-    db.q("SELECT allocate(%s)", (r,))
+    db.q("CALL allocate(%s)", (r,))
     assert open_alerts(db, "O+") == 1
-    db.q("SELECT close_request(%s, TRUE)", (r,))
+    db.q("CALL close_request(%s, TRUE)", (r,))
     assert open_alerts(db, "O+") == 0
     assert db.one("SELECT count(*) FROM blood_unit WHERE unit_id = ANY(%s) AND status='Available'", (units,)) == 2
 
@@ -168,7 +174,7 @@ def test_one_statement_opens_and_clears_alerts_for_different_groups(db):
     """The statement-level alert check sees every group a multi-row UPDATE touched (PR-05 bulk path)."""
     (falling,) = db.stock("O+")
     dn = db.donate(db.donor("A+"))
-    (rising,) = [u for (u,) in db.q("SELECT separate_donation(%s, ARRAY['RBC'])", (dn,))]
+    (rising,) = db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,))
     for t in ("HIV", "HBV", "HCV", "SYPH"):
         db.q("INSERT INTO test_result (donation_id, test_code, result) VALUES (%s,%s,'Negative')", (dn, t))
     db.q("INSERT INTO stock_threshold VALUES (%s,'O+','RBC',1), (%s,'A+','RBC',1)", (db.fac_h, db.fac_h))
@@ -202,9 +208,12 @@ def test_clinical_rule_changes_are_audited(db, sql, table):
 def test_temp_table_cannot_shadow_the_audit_log(db):
     """SE-08: SECURITY DEFINER functions search pg_temp last."""
     d = db.donor()
+    email = db.one("SELECT email FROM user_account WHERE user_id=%s", (d,))
     db.q("SET LOCAL ROLE vytal_app")
-    db.q("CREATE TEMP TABLE audit_log (LIKE vytal.audit_log)")
-    db.q("UPDATE donor SET weight_kg = 80 WHERE user_id=%s", (d,))
+    db.q("CREATE TEMP TABLE audit_log (audit_id bigint, user_id int, action text, table_name text, record_id text, "
+         "field_name text, old_value text, new_value text, changed_at timestamptz)")
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
+    db.q("CALL update_donor_profile(%s, NULL, %s, NULL, 80)", (d, email))
     assert db.one("SELECT count(*) FROM pg_temp.audit_log") == 0
     db.q("RESET ROLE")
     assert db.one("SELECT count(*) FROM vytal.audit_log WHERE record_id=%s AND field_name='weight_kg'", (str(d),)) == 1
@@ -219,7 +228,7 @@ def test_disjoint_specialization(db):
 def test_login_counters_and_password_hashes_never_reach_the_audit_log(db):
     d = db.donor()
     for _ in range(5):
-        db.q("SELECT login_attempt(%s, FALSE)", (d,))
+        db.q("CALL login_attempt(%s, FALSE)", (d,))
     db.q("UPDATE user_account SET password_hash = 'new-hash' WHERE user_id=%s", (d,))
     assert db.one("SELECT locked_until IS NOT NULL FROM user_account WHERE user_id=%s", (d,))
     assert db.one("SELECT count(*) FROM audit_log WHERE table_name='user_account' AND action='UPDATE'") == 0
@@ -235,6 +244,73 @@ def test_facility_threshold_and_donation_changes_are_audited(db):
     assert {(t, a, r) for t, a, r in db.q("SELECT table_name, action, record_id FROM audit_log "
                                           "WHERE table_name IN ('facility','stock_threshold','donation')")} >= {
         ("stock_threshold", "INSERT", f"{db.fac_h}/O-/RBC"), ("facility", "UPDATE", str(db.fac_b)), ("donation", "INSERT", str(dn))}
+
+
+def audit_rows(db, table, action=None):
+    return db.q("SELECT action, record_id, field_name, old_value, new_value FROM audit_log WHERE table_name=%s "
+                "AND (%s::text IS NULL OR action=%s) ORDER BY audit_id", (table, action, action))
+
+
+def test_staff_changes_are_audited(db):
+    uid = db.one("CALL create_staff(%s,'aud@v.ca','x','Al','Ud',%s,'Nurse')", (db.admin, db.fac_h))
+    assert [a for a, r, *_ in audit_rows(db, "staff") if r == str(uid)] == ["INSERT"]
+    db.q("UPDATE staff SET facility_id=%s, job_title='Lead' WHERE user_id=%s", (db.fac_b, uid))
+    assert {(f, o, n) for a, r, f, o, n in audit_rows(db, "staff", "UPDATE") if r == str(uid)} == {
+        ("facility_id", str(db.fac_h), str(db.fac_b)), ("job_title", "Nurse", "Lead")}
+    db.q("DELETE FROM staff WHERE user_id=%s", (uid,))
+    assert [a for a, r, *_ in audit_rows(db, "staff") if r == str(uid)] == ["INSERT", "UPDATE", "UPDATE", "DELETE"]
+    assert "password" not in "".join(str(x) for row in audit_rows(db, "staff") for x in row)
+
+
+def test_test_result_changes_are_audited(db):
+    dn = db.donate(db.donor())
+    db.q("INSERT INTO test_result (donation_id, test_code, result) VALUES (%s,'HIV','Negative')", (dn,))
+    rec = f"{dn}/HIV"
+    assert [(a, r) for a, r, *_ in audit_rows(db, "test_result")] == [("INSERT", rec)]
+    db.q("UPDATE test_result SET result='Positive' WHERE donation_id=%s AND test_code='HIV'", (dn,))
+    assert ("UPDATE", rec, "result", "Negative", "Positive") in audit_rows(db, "test_result")
+    db.q("DELETE FROM test_result WHERE donation_id=%s", (dn,))
+    assert audit_rows(db, "test_result")[-1][:2] == ("DELETE", rec)
+
+
+def test_request_unit_changes_are_audited(db):
+    unit = db.stock("O+")[0]
+    r = db.request("O+")
+    db.q("CALL allocate(%s)", (r,))
+    rec = f"{r}/{unit}"
+    assert [(a, rid) for a, rid, *_ in audit_rows(db, "request_unit")] == [("INSERT", rec)]
+    db.q("UPDATE request_unit SET released_at = now() WHERE request_id=%s", (r,))
+    assert [(a, rid, f) for a, rid, f, *_ in audit_rows(db, "request_unit", "UPDATE")] == [("UPDATE", rec, "released_at")]
+    db.q("DELETE FROM request_unit WHERE request_id=%s", (r,))
+    assert audit_rows(db, "request_unit")[-1][:2] == ("DELETE", rec)
+
+
+def test_donation_call_and_recipient_changes_are_audited(db):
+    d = db.donor("O-", screened=True)
+    db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
+    r = db.request("O-", comp="RBC", urgency="Emergency")
+    cid = db.one("INSERT INTO donation_call (request_id, sent_by, message) VALUES (%s,%s,'m') RETURNING call_id", (r, db.nurse))
+    db.q("INSERT INTO call_recipient (call_id, donor_id) VALUES (%s,%s)", (cid, d))
+    assert [(a, rid) for a, rid, *_ in audit_rows(db, "donation_call")] == [("INSERT", str(cid))]
+    assert [(a, rid) for a, rid, *_ in audit_rows(db, "call_recipient")] == [("INSERT", f"{cid}/{d}")]
+    db.q("UPDATE donation_call SET message='n' WHERE call_id=%s", (cid,))
+    db.q("UPDATE call_recipient SET response='Accepted', responded_at=now() WHERE call_id=%s", (cid,))
+    assert ("UPDATE", str(cid), "message", "m", "n") in audit_rows(db, "donation_call")
+    assert {f for a, rid, f, *_ in audit_rows(db, "call_recipient", "UPDATE")} == {"response", "responded_at"}
+    db.q("DELETE FROM call_recipient WHERE call_id=%s", (cid,))
+    db.q("DELETE FROM donation_call WHERE call_id=%s", (cid,))
+    assert audit_rows(db, "call_recipient")[-1][:2] == ("DELETE", f"{cid}/{d}")
+    assert audit_rows(db, "donation_call")[-1][:2] == ("DELETE", str(cid))
+
+
+def test_every_audited_table_has_its_audit_trigger(db):
+    """FR-33: the audited tables are exactly these; a table added to or dropped from the list must be a decision."""
+    audited = {t for (t,) in db.q("SELECT c.relname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+                                   "JOIN pg_proc p ON p.oid = g.tgfoid WHERE p.proname = 'audit_row' AND NOT g.tgisinternal")}
+    assert audited == {"donor", "deferral", "blood_unit", "blood_request", "compatibility", "component_type",
+                       "donation_interval", "eligibility_rule", "deferral_reason", "user_account", "facility",
+                       "stock_threshold", "donation", "staff", "test_result", "request_unit", "donation_call",
+                       "call_recipient"}
 
 
 # ---------------------------------------------------------------------- UC-24 2a compatibility coverage

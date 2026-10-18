@@ -85,7 +85,7 @@ ORDER BY l.donated_at, l.unit_id;
 -- serves: FR-34, FR-21
 -- why: The four numbers an Admin checks first, in one round trip.
 SELECT
-    (SELECT count(*) FROM v_donor_eligibility WHERE status = 'Eligible' AND group_verified) AS donors_eligible_now,
+    (SELECT count(*) FROM v_donor_eligibility WHERE can_be_called AND group_verified) AS donors_eligible_now,
     (SELECT count(DISTINCT donor_id) FROM donation WHERE donated_at > now() - interval '12 months') AS donors_active_12m,
     (SELECT count(*) FROM blood_request WHERE status = 'Open' AND urgency = 'Emergency') AS open_emergency,
     (SELECT count(*) FROM blood_request WHERE status = 'Open' AND urgency = 'Urgent') AS open_urgent,
@@ -184,7 +184,7 @@ WITH history AS (
     SELECT e.donor_code, e.blood_group, h.donations, h.last_donation,
            row_number() OVER (PARTITION BY e.blood_group ORDER BY h.donations DESC, h.last_donation) AS rank_in_group
     FROM history h JOIN v_donor_eligibility e ON e.user_id = h.donor_id
-    WHERE e.status = 'Eligible' AND h.donations >= 2 AND h.last_donation < CURRENT_DATE - 180
+    WHERE e.can_be_called AND h.donations >= 2 AND h.last_donation < CURRENT_DATE - 180
 )
 SELECT r.blood_group, r.rank_in_group, r.donor_code, r.donations, r.last_donation
 FROM ranked r

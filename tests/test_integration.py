@@ -15,6 +15,11 @@ NEG = {"HIV": "Negative", "HBV": "Negative", "HCV": "Negative", "SYPH": "Negativ
 SOON = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)
 
 
+def within_the_hour():
+    """BR-10: an Emergency request is needed within 1 hour."""
+    return dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=50)
+
+
 @pytest.fixture(scope="module")
 def world():
     """A fresh database; bootstrap rows are written by the owner, everything after goes through the backend."""
@@ -26,7 +31,7 @@ def world():
         admin = con.execute("INSERT INTO user_account (email,password_hash,first_name,last_name,role) "
                             "VALUES ('admin@v.ca','x','A','B','Admin') RETURNING user_id").fetchone()[0]
         con.execute("INSERT INTO admin VALUES (%s)", (admin,))
-        staff = [con.execute("SELECT create_staff(%s,%s,'x','S','T',%s,'Nurse')", (admin, f"s{i}@v.ca", f)).fetchone()[0]
+        staff = [con.execute("CALL create_staff(%s,%s,'x','S','T',%s,'Nurse')", (admin, f"s{i}@v.ca", f)).fetchone()[0]
                  for i, f in enumerate(fac)]
     return {"db": name, "admin": admin, "windsor": staff[0], "london": staff[1]}
 
@@ -58,7 +63,8 @@ def test_donor_journey_from_registration_to_transfusion(world):
     s = world["windsor"]
     donor = new_donor("journey@v.ca")
     assert svc.login("JOURNEY@v.ca", PASSWORD) == (donor, "Donor")
-    assert svc.donor_home(donor)["status"] == "Eligible"
+    assert svc.donor_home(donor)["status"] == "Complete screening to confirm eligibility"    # UC-05 2a
+    assert svc.complete_screening(donor, CLEAN) == "Eligible"
     _, units = donate_and_release(s, donor, "O+")
     assert any(g == "O+" and c == "RBC" and avail >= 1 for g, c, avail, *_ in svc.inventory(s))
     req = svc.submit_request(s, "P-100", "O+", "RBC", 1, "Routine", SOON)
@@ -115,19 +121,22 @@ def test_emergency_shortfall_triggers_a_donation_call(world):
     w = world["windsor"]
     called = new_donor("oneg@v.ca", "O-", sex="F")
     svc.verify_blood_group(w, called, "O-")
-    req = svc.submit_request(w, "P-300", None, "RBC", 2, "Emergency", SOON)
+    svc.complete_screening(called, CLEAN)                                              # UC-05 2a: screened donors only
+    req = svc.submit_request(w, "P-300", None, "RBC", 2, "Emergency", within_the_hour())
     assert req["shortfall"] == 2
     codes = [c for c, *_ in svc.find_donors(w, req["request_id"])]
     assert svc.donor_home(called)["donor_code"] in codes
-    call = svc.call_donors(w, req["request_id"], "O-negative donors needed today", codes)
+    call = svc.call_donors(w, req["request_id"], codes)
     assert svc.respond_to_call(called, call, True) == "Windsor General, 1 St"            # UC-20: facility details on accept
-    assert (call, "O-negative donors needed today", "Accepted") in svc.donor_home(called)["calls"]
+    msg = "Windsor General is asking for donors to give red blood cells. Please book a donation at 1 St. " \
+          "Accept or decline this call in Vytal."                                          # SE-07 fixed template only
+    assert (call, msg, "Accepted") in svc.donor_home(called)["calls"]
 
 
 def test_confirming_an_unknown_group_reserves_compatible_stock(world):
     w, l = world["windsor"], world["london"]
     donate_and_release(w, new_donor("ap@v.ca", "A+"), "A+", ("RBC",))
-    req = svc.submit_request(w, "P-310", None, "RBC", 1, "Emergency", SOON)
+    req = svc.submit_request(w, "P-310", None, "RBC", 1, "Emergency", within_the_hour())
     assert req["shortfall"] == 1
     with pytest.raises(svc.AccessDenied, match="another facility"):
         svc.confirm_request_group(l, req["request_id"], "A+")
@@ -183,7 +192,7 @@ def test_a_reserved_red_cell_does_not_hide_its_plasma(world):
         rid = holder.execute("INSERT INTO blood_request (requested_by,patient_ref,recipient_group,component_code,units_requested,"
                              "urgency,required_by) VALUES (%s,'H-1','B-','RBC',1,'Urgent',now()+interval '1 hour') RETURNING request_id",
                              (w,)).fetchone()[0]
-        assert holder.execute("SELECT allocate(%s)", (rid,)).fetchone()[0] == 1
+        assert holder.execute("CALL allocate(%s)", (rid,)).fetchone()[0] == 1
         assert svc.submit_request(w, "H-2", "B-", "PLASMA", 1, "Urgent", SOON)["reserved"] == 1
         holder.rollback()
 
@@ -226,7 +235,10 @@ def test_demo_script_replays_scenario_1(monkeypatch):
     done = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "demo.py")], env=env,
                           capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    assert "reserved 3, shortfall 1" in done.stdout and "reserved 4 of 4, shortfall 0" in done.stdout
+    for line in ("units reserved: 3", "shortfall: 1", "eligible donors found: 14", "donors called: 14",
+                 "units reserved: 4", "reserved groups: A+,O-,O-,O-", "donors who accepted: 2", "request status: Fulfilled",
+                 "Scenario 1 replayed with every number as specified"):
+        assert line in done.stdout, line
     assert "request status: Fulfilled" in done.stdout
     drop("vytal_demo")
 
@@ -315,7 +327,7 @@ def test_nightly_job_runs_through_the_backend(world):
         con.execute("UPDATE vytal.blood_unit SET expires_at = now() - interval '1 minute' WHERE unit_id = ANY(%s)", (units,))
         assert con.execute("SELECT count(*) FROM vytal.blood_unit WHERE expires_at <= now() "
                            "AND status IN ('Collected','Available','Reserved')").fetchone()[0] == 2
-    assert svc.nightly_expiry() == 2
+    assert svc.nightly_expiry(world["admin"]) == 2
     with owner(world) as con:
         assert con.execute("SELECT DISTINCT status FROM vytal.blood_unit WHERE unit_id = ANY(%s)", (units,)).fetchall() == \
             [("Expired",)]
@@ -361,12 +373,12 @@ def test_quarantine_waits_for_a_concurrent_allocation(world):
                         "urgency,required_by) VALUES (%s,'R-1','AB-','RBC',1,'Routine',now()+interval '1 day') RETURNING request_id",
                         (w,)).fetchone()[0]
         assert a.execute("SELECT unit_id FROM request_unit WHERE request_id=%s", (rid,)).fetchone() is None
-        a.execute("SELECT allocate(%s)", (rid,))
+        a.execute("CALL allocate(%s)", (rid,))
         assert a.execute("SELECT unit_id FROM request_unit WHERE request_id=%s", (rid,)).fetchone() == (units[0],)
 
         def quarantine():
             try:
-                b.execute("SELECT quarantine_donor(%s)", (donor,))
+                b.execute("CALL quarantine_donor(%s)", (donor,))
                 b.commit()
             except Exception as e:          # surfaced by the assertion below
                 errors.append(e)
@@ -388,4 +400,133 @@ def test_quarantine_waits_for_a_concurrent_allocation(world):
         assert con.execute("SELECT status FROM blood_unit WHERE unit_id=%s", (units[0],)).fetchone() == ("Quarantined",)
         assert con.execute("SELECT count(*) FROM request_unit ru JOIN blood_unit u USING (unit_id) WHERE u.status = 'Quarantined' "
                            "AND ru.released_at IS NULL AND ru.issued_at IS NULL").fetchone()[0] == 0
-        assert con.execute("SELECT close_request(%s, TRUE)", (rid,)).fetchone()[0] == "Cancelled"
+        assert con.execute("CALL close_request(%s, TRUE)", (rid,)).fetchone()[0] == "Cancelled"
+
+
+# ---------------------------------------------------------------------- items added for UC-01 2b, UC-18, UC-21, UC-24, UC-25, FR-21, FR-27
+def test_registration_refuses_a_donor_under_17(world):
+    teen = dt.date.today().replace(year=dt.date.today().year - 15)
+    with pytest.raises(svc.InvalidInput, match="date_of_birth: donors must be at least 17"):
+        svc.register_donor("teen@v.ca", PASSWORD, "Tia", "Lam", None, teen, "F", 55, "1 St", "O+")
+
+
+def test_admin_rule_edits_audit_filter_and_csv(world, tmp_path):
+    admin, staff = world["admin"], world["windsor"]
+    svc.save_deferral_reason(admin, "SURG", "Surgery in the last 6 months", False, 180)
+    with pytest.raises(psycopg.Error, match="Admin access only"):
+        svc.set_shelf_life(staff, "PLT", 7)
+    with pytest.raises(svc.InvalidInput):
+        svc.set_eligibility_rule(admin, "M", 12, 50, 130)
+    rows = svc.audit_log(admin, table="deferral_reason", record_id="SURG")
+    assert [(r[2], r[3]) for r in rows] == [(admin, "INSERT")] and "Surgery" in rows[0][8]
+    assert svc.audit_log(admin, table="deferral_reason", since=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)) == []
+    text = svc.audit_csv(admin, path=tmp_path / "audit.csv", table="deferral_reason", record_id="SURG")
+    assert text.splitlines()[0].startswith("audit_id,changed_at,user_id,action") and len(text.splitlines()) == 2
+    with open(tmp_path / "audit.csv", newline="") as f:
+        assert f.read() == text
+    with pytest.raises(svc.AccessDenied):
+        svc.audit_log(staff)
+
+
+def test_lookback_export_lists_only_issued_units(world):
+    admin, staff = world["admin"], world["windsor"]
+    donor = new_donor("issued@v.ca", "AB-")
+    _, units = donate_and_release(staff, donor, "AB-", ("RBC", "PLASMA"))
+    req = svc.submit_request(staff, "P-900", "AB-", "PLASMA", 9, "Routine", SOON)
+    with owner(world) as con:
+        reserved = [u for (u,) in con.execute("SELECT unit_id FROM vytal.request_unit WHERE request_id=%s AND released_at IS NULL",
+                                              (req["request_id"],))]
+    plasma = next(u for u in units if u.endswith("PLASMA"))
+    assert plasma in reserved
+    assert svc.close_request(staff, req["request_id"], issued_units=[plasma]) == "Partially Fulfilled"
+    code = svc.donor_home(donor)["donor_code"]
+    lines = svc.lookback_issued_csv(admin, code).splitlines()
+    assert lines[0] == "unit_id,component_code,issued_at,request_facility,request_id"
+    assert len(lines) == 2 and lines[1].startswith(plasma + ",PLASMA,")
+    with pytest.raises(svc.AccessDenied):
+        svc.lookback_issued_csv(staff, code)
+
+
+def test_staff_search_by_group_see_call_responses_and_open_alerts(world):
+    w, l = world["windsor"], world["london"]
+    donor = new_donor("caller@v.ca", "O-")
+    svc.verify_blood_group(w, donor, "O-")
+    assert svc.complete_screening(donor, CLEAN) == "Eligible"
+    code = svc.donor_home(donor)["donor_code"]
+    assert code in {c for c, _, _ in svc.search_donors(w, "AB+", "RBC")}
+    with pytest.raises(svc.InvalidInput):
+        svc.search_donors(w, "C+")
+    with pytest.raises(svc.AccessDenied):
+        svc.search_donors(donor, "O-")
+    rid = svc.submit_request(w, "P-910", None, "RBC", 40, "Emergency", within_the_hour())["request_id"]
+    svc.call_donors(w, rid, [code])
+    svc.respond_to_call(donor, svc.donor_home(donor)["calls"][0][0], True)
+    assert [(c, r) for c, r, _ in svc.call_responses(w, rid)] == [(code, "Accepted")]
+    with pytest.raises(svc.AccessDenied):
+        svc.call_responses(l, rid)
+    with owner(world) as con:
+        fac = con.execute("SELECT facility_id FROM vytal.staff WHERE user_id=%s", (w,)).fetchone()[0]
+    svc.set_threshold(w, fac, "AB+", "PLT", 5)
+    assert ("AB+", "PLT", 0, 5) in {a[:4] for a in svc.open_alerts(w)}
+    assert ("AB+", "PLT", 0, 5) not in {a[:4] for a in svc.open_alerts(l)}
+
+
+def test_donor_reads_and_marks_notifications(world):
+    donor = new_donor("reader@v.ca")
+    with owner(world) as con:
+        con.execute("INSERT INTO vytal.notification (user_id, message) VALUES (%s,'one'), (%s,'two')", (donor, donor))
+    unread = svc.list_notifications(donor, unread_only=True)
+    assert len(unread) == 2
+    svc.mark_read(donor, unread[0][0])
+    assert len(svc.list_notifications(donor, unread_only=True)) == 1 and len(svc.list_notifications(donor)) == 2
+    with pytest.raises(psycopg.Error, match="not found"):
+        svc.mark_read(world["windsor"], unread[1][0])
+
+
+def test_password_change_and_admin_reset_through_the_backend(world):
+    """UC-01 2a: the old password is proved first; an Admin reset clears a lockout; login uses only login_lookup (SE-07)."""
+    d = new_donor("pw@v.ca")
+    with pytest.raises(svc.AccessDenied, match="current password is wrong"):
+        svc.change_password(d, "not-my-password", "brand-new-pass-1")
+    with pytest.raises(svc.InvalidInput, match="password"):
+        svc.change_password(d, PASSWORD, "short")
+    svc.change_password(d, PASSWORD, "brand-new-pass-1")
+    with pytest.raises(svc.AccessDenied):
+        svc.login("pw@v.ca", PASSWORD)
+    assert svc.login("pw@v.ca", "brand-new-pass-1") == (d, "Donor")
+    for _ in range(5):
+        with pytest.raises(svc.AccessDenied):
+            svc.login("pw@v.ca", "wrong-password-x")
+    with pytest.raises(svc.AccessDenied, match="locked"):
+        svc.login("pw@v.ca", "brand-new-pass-1")
+    with pytest.raises(Exception, match="Admin access only"):
+        svc.admin_reset_password(world["windsor"], d, "reset-by-admin-7")
+    svc.admin_reset_password(world["admin"], d, "reset-by-admin-7")
+    assert svc.login("pw@v.ca", "reset-by-admin-7") == (d, "Donor")
+
+
+def test_profile_and_screening_answers_are_scoped(world):
+    """SE-07: contact details and screening answers reach only their owner (and clinic staff for answers)."""
+    d, other = new_donor("prof@v.ca"), new_donor("prof2@v.ca")
+    assert svc.profile(d)["email"] == "prof@v.ca" and svc.profile(d)["address"] == "1 Main St"
+    svc.complete_screening(d, CLEAN)
+    with owner(world) as con:
+        sid = con.execute("SELECT max(screening_id) FROM vytal.screening WHERE donor_id = %s", (d,)).fetchone()[0]
+    assert len(svc.screening_answers(d, sid)) == 6
+    assert len(svc.screening_answers(world["windsor"], sid)) == 6
+    with pytest.raises(Exception, match="only to the donor and to clinic staff"):
+        svc.screening_answers(other, sid)
+
+
+def test_admin_clears_a_lookback_through_the_backend(world):
+    s = world["windsor"]
+    d = new_donor("clear@v.ca", "B+")
+    _, units = donate_and_release(s, d, "B+")
+    rows = svc.quarantine_donor(world["admin"], d)
+    assert {r[4] for r in rows} == {"Quarantined"}                     # lookback rows: (..., unit_id, component, status, ...)
+    with pytest.raises(svc.InvalidInput):
+        svc.clear_lookback(world["admin"], d, " ")
+    with pytest.raises(Exception, match="Admin access only"):
+        svc.clear_lookback(s, d, "cleared")
+    assert svc.clear_lookback(world["admin"], d, "malaria test negative") == len(units)
+    assert svc.donor_home(d)["status"] != "Not eligible (flagged after a failed test)"

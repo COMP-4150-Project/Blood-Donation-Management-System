@@ -156,7 +156,7 @@ class Seeder:
                       (d["id"], staff, dtype, ts, 450 if dtype == "WB" else 600, round(min_hb + rng.uniform(2, 30), 1)))
         comps = {"WB": ["RBC", "PLASMA"] + (["PLT"] if rng.random() < .5 else []), "PLS": ["PLASMA"], "PLT": ["PLT"]}[dtype]
         tested = ts + dt.timedelta(hours=rng.uniform(6, 20))
-        units = [u for (u,) in self.q("SELECT separate_donation(%s, %s)", (dn, comps))]
+        units = self.one("CALL separate_donation(%s, %s)", (dn, comps))
         positive = rng.random() < .004
         for t in self.tests:
             res = "Positive" if positive and t == "HBV" else "Negative"
@@ -258,7 +258,7 @@ class Seeder:
     # ------------------------------------------------------------------ today, through the stored procedures
     def today(self):
         rng = self.rng
-        n_expired = self.one("SELECT expire_units()")
+        n_expired = self.one("CALL run_nightly_expiry()")
         for (u,) in self.q("SELECT unit_id FROM blood_unit WHERE status='Expired'"):
             self.backdate["unit"][u] = self.backdate["wastage"][u] = None    # None = use the unit's own expiry time
         self.apply_backdates()                 # before today's actions, which keep their real now() stamps
@@ -274,21 +274,20 @@ class Seeder:
                 rid = self.one("INSERT INTO blood_request (requested_by,patient_ref,recipient_group,component_code,units_requested,"
                                "urgency,required_by) VALUES (%s,%s,%s,%s,%s,%s,now() + make_interval(hours => %s)) RETURNING request_id",
                                (rng.choice(self.staff[fac]), f"P-{rng.randint(10000, 99999)}", rec, comp, n, urg, hrs))
-                self.one("SELECT allocate(%s)", (rid,))
+                self.one("CALL allocate(%s)", (rid,))
                 open_reqs.append((rid, fac))
         short = self.q("SELECT request_id FROM v_request_status s JOIN blood_request r USING (request_id) "
                        "WHERE r.status='Open' AND s.shortfall > 0 ORDER BY r.urgency='Emergency' DESC, request_id")
         if short:
             rid = short[0][0]
             fac = dict(open_reqs)[rid]
-            call = self.one("SELECT send_donation_call(%s,%s,%s)",
-                            (rid, self.staff[fac][0], "A patient near you needs blood. Please book a donation if you can."))
+            call = self.one("CALL send_donation_call(%s,%s)", (rid, self.staff[fac][0]))
             for i, (donor,) in enumerate(self.q("SELECT donor_id FROM call_recipient WHERE call_id=%s ORDER BY donor_id LIMIT 6", (call,))):
-                self.q("SELECT respond_to_call(%s,%s,%s)", (call, donor, i % 3 != 2))
+                self.q("CALL respond_to_call(%s,%s,%s)", (call, donor, i % 3 != 2))
         flagged = self.q("SELECT o.user_id FROM donor o WHERE is_flagged AND EXISTS (SELECT 1 FROM v_blood_unit u "
                          "WHERE u.donor_id = o.user_id AND u.status IN ('Available','Reserved')) ORDER BY 1 LIMIT 1")
         if flagged:
-            self.one("SELECT quarantine_donor(%s)", (flagged[0][0],))
+            self.one("CALL quarantine_donor(%s)", (flagged[0][0],))
         return n_expired
 
     def apply_backdates(self):
