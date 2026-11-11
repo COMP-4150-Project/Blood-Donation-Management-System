@@ -1,0 +1,23 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}New request{% endblock %}{% block crumb %}New blood request{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>New blood request</h1><p>Pick an urgency, fill in the patient details and submit. Compatible stock is reserved at once, oldest units first.</p></div></div>
+<form id="request-form" class="card" method="post" style="display:grid;gap:18px;max-width:820px" novalidate>
+ {{ m.csrf_field() }}
+ <div class="field"><span class="lbl">Urgency</span>
+  <div class="seg" role="group" aria-label="Urgency presets" style="width:fit-content">{% for u in ['Emergency','Urgent','Routine'] %}<button type="button" data-pick-urgency="{{ u }}" aria-pressed="{{ 'true' if (form.get('urgency','Urgent') == u) else 'false' }}">{{ u }}</button>{% endfor %}</div>
+  <select id="urgency" name="urgency" class="sr" tabindex="-1" aria-hidden="true">{% for u in ['Emergency','Urgent','Routine'] %}<option {% if form.get('urgency','Urgent') == u %}selected{% endif %}>{{ u }}</option>{% endfor %}</select>
+  <div class="hint">Emergency is needed within 1 hour, Urgent within 24 hours. Routine can be scheduled later.</div>
+  {% if ferrs.urgency %}<div class="ferr" role="alert">{{ ferrs.urgency }}</div>{% endif %}</div>
+ <div class="form-grid">
+  {{ m.field('patient_ref','Patient reference', ph='P-31245', hint='Use the hospital reference, never the patient name.', attrs='autocomplete="off" autofocus') }}
+  {{ m.select('recipient_group','Patient blood group',GROUPS, required=false, blank='Unknown, lab pending', hint='If unknown, the system reserves compatible stock for any group.') }}
+  {{ m.select('component','Component',COMPONENTS, value='RBC') }}
+  {{ m.field('units','Units needed','number', attrs='min="1" max="50" inputmode="numeric"', value='1') }}
+  <div class="field{% if ferrs.required_by %} err{% endif %}"><label for="required_by">Needed by</label>
+   <input id="required_by" type="datetime-local" value="{{ form.get('required_by_local','') }}" required>
+   <input type="hidden" id="required_by_iso" name="required_by" value="">
+   {% if ferrs.required_by %}<div class="ferr" role="alert">{{ ferrs.required_by }}</div>{% endif %}</div>
+ </div>
+ <div class="actions"><button class="btn red" type="submit">Submit request</button><a class="btn ghost" href="{{ url_for('staff_requests') }}">Cancel</a></div>
+</form>
+{% endblock %}

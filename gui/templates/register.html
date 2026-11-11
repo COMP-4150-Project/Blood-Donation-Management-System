@@ -1,0 +1,22 @@
+{% extends '_public.html' %}{% import 'macros.html' as m with context %}{% block title %}Register{% endblock %}
+{% block panel %}
+<form method="post" action="{{ url_for('register') }}" style="display:grid;gap:14px" novalidate>
+ {{ m.csrf_field() }}
+ <div><h2>Become a donor</h2><p class="muted" style="margin-top:6px">Takes a minute. Staff confirm your blood group at your first visit.</p></div>
+ <div class="form-grid">
+  {{ m.field('first_name','First name', attrs='autocomplete="given-name"') }}
+  {{ m.field('last_name','Last name', attrs='autocomplete="family-name"') }}
+  <div class="full">{{ m.field('email','Email','email', attrs='autocomplete="email"') }}</div>
+  {{ m.field('phone','Phone','tel', required=false, attrs='autocomplete="tel"') }}
+  {{ m.field('date_of_birth','Date of birth','date', attrs='max="'~today~'" autocomplete="bday"') }}
+  {{ m.select('sex','Sex used for donation rules',[('F','Female'),('M','Male')], blank='Choose', hint='Sets your minimum weight and the time between donations.') }}
+  {{ m.field('weight_kg','Weight (kg)','number', attrs='min="20" max="300" step="0.1" inputmode="decimal"') }}
+  <div class="full">{{ m.field('address','Home address', attrs='autocomplete="street-address"') }}</div>
+  <div class="full">{{ m.select('blood_group','Blood group',GROUPS, required=false, blank="I don't know", hint='Staff verify this before you can be called to donate.') }}</div>
+  {{ m.field('password','Password','password', hint='At least 10 characters.', attrs='minlength="10" autocomplete="new-password"') }}
+  {{ m.field('password2','Repeat password','password', attrs='autocomplete="new-password"') }}
+ </div>
+ <button class="btn red block" type="submit">Create account</button>
+ <p class="muted" style="text-align:center">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>
+</form>
+{% endblock %}

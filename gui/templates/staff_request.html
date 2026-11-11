@@ -1,0 +1,49 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Request #{{ req.request_id }}{% endblock %}{% block crumb %}Request #{{ req.request_id }}{% endblock %}
+{% block content %}
+{% set open = req.status == 'Open' %}
+<div class="page-head"><div><div class="row" style="align-items:center;gap:10px;margin-bottom:8px">{{ m.urgency(req.urgency) }}{{ m.status(req.status) }}</div>
+ <h1>{{ req.units_requested }} × {{ req.component_code|comp }} for <span class="mono">{{ req.patient_ref }}</span></h1>
+ <p>Needed {{ m.time(req.required_by, rel=true) }} · logged {{ m.time(req.created_at) }}</p></div>
+ <a class="btn ghost" href="{{ url_for('staff_requests') }}">All requests</a></div>
+
+<div class="grid g3" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+ <div class="card"><span class="muted">Patient group</span><div style="margin-top:8px;font-size:1.3rem">{{ m.bt(req.recipient_group) }}</div></div>
+ <div class="card"><span class="muted">Reserved</span><div class="stat"><span class="n"><span data-count="{{ req.units_reserved }}">0</span><span class="muted" style="font-size:1.1rem"> / {{ req.units_requested }}</span></span></div>
+  <div class="bar" style="margin-top:10px"><i data-w="{{ (req.units_reserved * 100 // req.units_requested) }}"></i></div></div>
+ <div class="card {{ 'stat red' if req.shortfall and open }}"><span class="muted">Shortfall</span><div class="stat"><span class="n" {% if req.shortfall and open %}style="color:var(--red-text)"{% endif %}>{{ req.shortfall }}</span></div><span class="muted">{{ 'Call donors below to close the gap.' if req.shortfall and open else 'Fully covered.' if open else '' }}</span></div>
+</div>
+
+{% if open and req.recipient_group is none %}<form class="card" method="post" action="{{ url_for('staff_request_group', request_id=req.request_id) }}" style="border-color:var(--amber)">
+ {{ m.csrf_field() }}<header><h3>Lab confirmed the patient's group?</h3></header><div class="row">
+ <div style="width:200px">{{ m.select('blood_group','Confirmed group',GROUPS, blank='Choose') }}</div><button class="btn teal" type="submit">Confirm and reserve</button></div></form>{% endif %}
+
+<div class="split">
+ <div class="card"><header><h3>Reserved units</h3>{% if open and units %}<span class="muted">Oldest expiry first</span>{% endif %}</header>
+ {% if units %}
+ <form method="post" action="{{ url_for('staff_request_close', request_id=req.request_id) }}">{{ m.csrf_field() }}
+ <div class="tablewrap"><table><thead><tr>{% if open %}<th><span class="sr">Issue</span></th>{% endif %}<th>Unit</th><th>Component</th><th>Group</th><th>Expires</th><th>Status</th></tr></thead><tbody>
+ {% for u in units %}<tr>{% if open %}<td><label class="sr" for="u{{ loop.index }}">Issue {{ u.unit_id }}</label><input id="u{{ loop.index }}" type="checkbox" name="unit" value="{{ u.unit_id }}" checked style="width:20px;min-height:0;height:20px;accent-color:var(--teal)"></td>{% endif %}
+  <td class="mono">{{ u.unit_id }}</td><td>{{ u.component_code|comp }}</td><td>{{ m.bt(u.blood_group) }}</td><td>{{ m.time(u.expires_at, rel=true) }}</td><td>{{ m.status(u.status) }}</td></tr>{% endfor %}</tbody></table></div>
+ {% if open %}<input type="hidden" name="pick" value="1"><div class="actions" style="margin-top:16px">
+  <button class="btn red" type="submit" name="action" value="issue" data-confirm="The ticked units will be issued to the patient and the request closed. Unticked units go back on the shelf." data-title="Issue units?" data-go="Issue units">Issue ticked units</button>
+  <button class="btn danger" type="submit" name="action" value="cancel" data-confirm="The request will be cancelled and its reserved units released." data-title="Cancel this request?" data-go="Cancel request">Cancel request</button></div>{% endif %}</form>
+ {% elif open %}{{ m.empty('Nothing reserved yet. Compatible stock may arrive after a donation, or call donors.') }}
+ <form method="post" action="{{ url_for('staff_request_close', request_id=req.request_id) }}">{{ m.csrf_field() }}<button class="btn danger" name="action" value="cancel" data-confirm="The request will be cancelled." data-title="Cancel this request?" data-go="Cancel request">Cancel request</button></form>
+ {% else %}{{ m.empty('No units are held for this request.') }}{% endif %}</div>
+
+ <div class="card"><header><h3>Donation calls</h3></header>
+ {% if calls %}<div class="grid" style="gap:10px;margin-bottom:16px">{% for c in calls %}<div class="card" style="box-shadow:none;background:var(--surface-2);padding:14px"><div class="row" style="justify-content:space-between"><span>{{ m.time(c.sent_at, rel=true) }}</span><span class="mono">{{ c.recipients }} called</span></div>
+  <div class="row" style="gap:8px;margin-top:8px"><span class="pill green">{{ c.accepted }} accepted</span><span class="pill grey">{{ c.declined }} declined</span><span class="pill amber">{{ c.recipients - c.accepted - c.declined }} waiting</span></div></div>{% endfor %}</div>{% endif %}
+ {% if responses %}<div class="tablewrap"><table><thead><tr><th>Donor</th><th>Answer</th></tr></thead><tbody>{% for r in responses %}<tr><td class="mono">{{ r[0] }}</td><td>{{ m.status(r[1]) }}</td></tr>{% endfor %}</tbody></table></div>
+ {% elif not calls %}<p class="muted">No calls sent yet.</p>{% endif %}</div>
+</div>
+
+{% if open %}<form class="card" method="post" action="{{ url_for('staff_request_call', request_id=req.request_id) }}">
+ {{ m.csrf_field() }}<header><h3>Eligible, compatible donors ({{ donors|length }})</h3><span class="muted">Codes only, no contact details</span></header>
+ {% if donors %}
+ <div class="row" style="margin-bottom:12px"><label class="check"><input type="checkbox" data-all=".dn" checked> Select all</label></div>
+ <div class="chips">{% for d in donors %}<label class="chip"><input class="dn" type="checkbox" name="donor" value="{{ d[0] }}" checked><span><b class="mono">{{ d[0] }}</b> {{ d[1]|replace('-','−') }}</span></label>{% endfor %}</div>
+ <div class="row" style="margin-top:18px;align-items:flex-end"><div style="width:220px">{{ m.field('preferred','Preferred date','date', required=false) }}</div><button class="btn red" type="submit">Send donation call</button></div>
+ {% else %}{{ m.empty('No eligible, verified donor matches this request right now.') }}{% endif %}
+</form>{% endif %}
+{% endblock %}

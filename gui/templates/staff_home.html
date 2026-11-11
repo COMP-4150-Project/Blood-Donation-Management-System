@@ -1,0 +1,40 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Dashboard{% endblock %}{% block crumb %}{{ o.facility.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ o.facility.name }}</h1><p>{{ o.facility.facility_type }} · {{ o.facility.address }}</p></div>
+ <div class="actions"><a class="btn red" href="{{ url_for('staff_request_new') }}">New blood request</a><a class="btn ghost" href="{{ url_for('staff_search') }}">Find donors</a></div></div>
+
+<div class="grid g3" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+ <div class="card stat teal lift"><span class="l">Units on the shelf</span><span class="n" data-count="{{ o.stats.available }}">0</span><span class="l">available now</span></div>
+ <div class="card stat lift {{ 'red' if o.stats.expiring }}"><span class="l">Expiring in 48 hours</span><span class="n" data-count="{{ o.stats.expiring }}">0</span><span class="l">use these first</span></div>
+ <div class="card stat lift {{ 'red' if o.stats.open_requests }}"><span class="l">Open requests</span><span class="n" data-count="{{ o.stats.open_requests }}">0</span><span class="l">at this facility</span></div>
+ <div class="card stat teal lift"><span class="l">Donors ready</span><span class="n" data-count="{{ o.stats.donors_ready }}">0</span><span class="l">eligible and verified</span></div>
+</div>
+
+{% if o.alerts %}<div class="card" style="border-color:var(--red)"><header><h3>Low stock alerts</h3><span class="pill red pulse">{{ o.alerts|length }} open</span></header>
+ <div class="grid g3">{% for a in o.alerts %}<div class="row" style="align-items:center;justify-content:space-between;background:var(--red-soft);padding:10px 14px;border-radius:11px">
+  <span>{{ m.bt(a[0]) }} <b>{{ a[1]|comp }}</b></span><span class="mono">{{ a[2] }} of {{ a[3] }} min</span></div>{% endfor %}</div></div>{% endif %}
+
+<div class="split">
+ <div class="card"><header><h3>Stock by blood group</h3>
+  <div class="seg" role="tablist" aria-label="Component">{% for code, name in COMPONENTS %}<button type="button" role="tab" data-tab="{{ code }}" aria-pressed="{{ 'true' if loop.first else 'false' }}">{{ name }}</button>{% endfor %}</div></header>
+  {% for code, name in COMPONENTS %}
+  <div data-panel="{{ code }}" {% if not loop.first %}hidden{% endif %} class="tablewrap"><div class="matrix" role="table" aria-label="{{ name }} stock">
+   <span></span>{% for g in GROUPS %}<span class="h">{{ g|replace('-','−') }}</span>{% endfor %}
+   <span class="r">Available</span>{% for g in GROUPS %}{% set c = o.matrix[code][g] %}
+    <span class="cell {{ 'low' if c.min is not none and c.available < c.min else ('warn' if c.expiring else ('ok' if c.min is not none else '')) }}" title="{{ g }}: {{ c.available }} available, {{ c.reserved }} reserved, {{ c.expiring }} expiring soon, minimum {{ c.min if c.min is not none else 'not set' }}">
+     <b>{{ c.available }}</b><small>{% if c.min is not none %}min {{ c.min }}{% else %}no min{% endif %}</small>
+     <i data-w="{{ [100, (c.available * 100 // (c.min * 2)) if c.min else (c.available * 10)]|min }}"></i></span>{% endfor %}
+   <span class="r">Reserved</span>{% for g in GROUPS %}<span class="mono" style="text-align:center;color:var(--muted)">{{ o.matrix[code][g].reserved }}</span>{% endfor %}
+  </div></div>{% endfor %}
+  <div class="legend" style="margin-top:14px"><span style="--c:var(--red)">Below minimum</span><span style="--c:var(--amber)">Some expire within 48 h</span><span style="--c:var(--green)">At or above minimum</span><span style="--c:var(--teal)">No minimum set</span></div></div>
+
+ <div class="card"><header><h3>Request queue</h3><a href="{{ url_for('staff_requests') }}">View all</a></header>
+ {% if o.queue %}<div class="grid" style="gap:10px">{% for r in o.queue %}
+  <a href="{{ url_for('staff_request', request_id=r.request_id) }}" class="card lift" style="box-shadow:none;background:var(--surface-2);padding:14px;text-decoration:none;color:inherit;display:grid;gap:8px">
+   <div class="row" style="justify-content:space-between;align-items:center">{{ m.urgency(r.urgency) }}{{ m.status(r.status) }}</div>
+   <div class="row" style="align-items:center;gap:10px">{{ m.bt(r.recipient_group) }}<b>{{ r.units_requested }} × {{ r.component_code|comp }}</b><span class="muted mono">{{ r.patient_ref }}</span></div>
+   <div class="row" style="justify-content:space-between;font-size:.85rem" class="muted"><span class="muted">Needed {{ m.time(r.required_by, rel=true) }}</span>
+    <span class="{{ 'ferr' if r.shortfall and r.status == 'Open' }}" style="{{ '' if r.shortfall and r.status == 'Open' else 'color:var(--muted)' }}">{{ r.units_reserved }}/{{ r.units_requested }} reserved</span></div></a>{% endfor %}</div>
+ {% else %}{{ m.empty('No requests yet. New ones appear here, most urgent first.') }}{% endif %}</div>
+</div>
+{% endblock %}

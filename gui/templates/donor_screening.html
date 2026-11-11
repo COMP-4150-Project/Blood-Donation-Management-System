@@ -1,0 +1,14 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Health screening{% endblock %}{% block crumb %}Donor · Screening{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Health screening</h1><p>Answer honestly. Your answers are private to you and the clinic team, and they decide whether you can donate today.</p></div></div>
+<form class="card" method="post" style="display:grid;gap:4px;max-width:760px" novalidate>
+ {{ m.csrf_field() }}
+ {% for q in qs %}<fieldset style="border:0;padding:16px 0;margin:0;border-top:{{ '0' if loop.first else '1px solid var(--line-2)' }};display:grid;gap:10px">
+  <legend style="font-weight:600;padding:0 0 8px">{{ loop.index }}. {{ q.question_text }}</legend>
+  <div class="chips">
+   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="yes" required {% if form.get('q'~q.question_id) == 'yes' %}checked{% endif %}><span>Yes</span></label>
+   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="no" {% if form.get('q'~q.question_id) == 'no' %}checked{% endif %}><span>No</span></label>
+  </div></fieldset>{% endfor %}
+ <div class="actions" style="margin-top:8px"><button class="btn red" type="submit">Submit answers</button><a class="btn ghost" href="{{ url_for('donor_home') }}">Cancel</a></div>
+</form>
+{% endblock %}
