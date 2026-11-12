@@ -1,0 +1,9 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Notifications{% endblock %}{% block crumb %}Inbox{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Notifications</h1><p>Calls from hospitals and system messages sent to you.</p></div>
+{% if items|selectattr('3','none')|list %}<form method="post" action="{{ url_for('notifications_read') }}" class="actions">{{ m.csrf_field() }}
+ {% for n in items if n[3] is none %}<input type="hidden" name="id" value="{{ n[0] }}">{% endfor %}<button class="btn ghost" type="submit">Mark all read</button></form>{% endif %}</div>
+<div class="card">{% if items %}<div class="timeline">{% for n in items %}<div class="tl {{ 'red' if n[3] is none }} reveal" style="--i:{{ [loop.index0,10]|min }}"><i></i><div><p {% if n[3] is none %}style="font-weight:600"{% endif %}>{{ n[1] }}</p>
+ <div class="t">{{ m.time(n[2], rel=true) }}{% if n[3] is none %} · <span class="pill red">New</span>{% endif %}</div></div></div>{% endfor %}</div>
+{% else %}{{ m.empty('You are all caught up.') }}{% endif %}</div>
+{% endblock %}

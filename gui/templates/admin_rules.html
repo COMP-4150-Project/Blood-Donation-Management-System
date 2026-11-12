@@ -1,0 +1,30 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Clinical rules{% endblock %}{% block crumb %}Clinical rules{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Clinical rules</h1><p>Reference data the whole system relies on. Every change is written to the audit log, and the database refuses edits that would leave a patient group with no donor group.</p></div></div>
+
+<div class="card"><header><h3>Who can give to whom</h3><div class="seg" role="tablist" aria-label="Component">{% for code, name in COMPONENTS %}<button type="button" data-tab="{{ code }}" aria-pressed="{{ 'true' if loop.first else 'false' }}">{{ name }}</button>{% endfor %}</div></header>
+ {% for code, name in COMPONENTS %}<div data-panel="{{ code }}" {% if not loop.first %}hidden{% endif %} class="tablewrap"><p class="muted" style="margin-bottom:10px">Rows are the patient's group, columns the donor's group. Click a square to allow or stop a pairing.</p>
+  <div class="cmx"><span></span>{% for dg in GROUPS %}<span class="h" style="text-align:center;font-weight:700">{{ dg|replace('-','−') }}</span>{% endfor %}
+  {% for rg in GROUPS %}<b style="align-self:center">{{ rg|replace('-','−') }}</b>{% for dg in GROUPS %}<button type="button" data-c="{{ code }}" data-r="{{ rg }}" data-d="{{ dg }}" aria-pressed="{{ 'true' if (code, rg, dg) in r.compat else 'false' }}" aria-label="{{ dg }} donor to {{ rg }} patient, {{ name }}">✓</button>{% endfor %}{% endfor %}</div></div>{% endfor %}</div>
+
+<div class="grid g2">
+ <div class="card" id="shelf"><header><h3>Shelf life</h3></header><div class="grid">{% for c in r.components %}
+  <form method="post" action="{{ url_for('admin_rule_shelf') }}" class="row" style="align-items:flex-end">{{ m.csrf_field() }}<input type="hidden" name="component" value="{{ c.component_code }}">
+   <div style="flex:1;min-width:120px"><label for="sl{{ c.component_code }}"><b>{{ c.name }}</b></label><input id="sl{{ c.component_code }}" name="days" type="number" min="1" value="{{ c.shelf_life_days }}"></div><span class="muted" style="padding-bottom:12px">days</span><button class="btn ghost sm">Save</button></form>{% endfor %}</div></div>
+ <div class="card" id="interval"><header><h3>Time between donations</h3></header><div class="grid">{% for i in r.intervals %}
+  <form method="post" action="{{ url_for('admin_rule_interval') }}" class="row" style="align-items:flex-end">{{ m.csrf_field() }}<input type="hidden" name="type" value="{{ i.donation_type_code }}"><input type="hidden" name="sex" value="{{ i.sex }}">
+   <div style="flex:1;min-width:140px"><label for="iv{{ i.donation_type_code }}{{ i.sex }}"><b>{{ i.name }}</b> · {{ 'Female' if i.sex == 'F' else 'Male' }}</label><input id="iv{{ i.donation_type_code }}{{ i.sex }}" name="days" type="number" min="1" value="{{ i.interval_days }}"></div><span class="muted" style="padding-bottom:12px">days</span><button class="btn ghost sm">Save</button></form>{% endfor %}</div></div>
+</div>
+
+<div class="card" id="eligibility"><header><h3>Donor eligibility minimums</h3></header><div class="grid g2">{% for e in r.elig %}
+ <form method="post" action="{{ url_for('admin_rule_eligibility') }}" class="card" style="box-shadow:none;background:var(--surface-2)">{{ m.csrf_field() }}<input type="hidden" name="sex" value="{{ e.sex }}"><h3 style="margin-bottom:12px">{{ 'Female' if e.sex == 'F' else 'Male' }} donors</h3>
+  <div class="form-grid"><div class="field"><label for="ma{{ e.sex }}">Minimum age</label><input id="ma{{ e.sex }}" name="min_age" type="number" value="{{ e.min_age_years }}"></div>
+   <div class="field"><label for="mw{{ e.sex }}">Minimum weight (kg)</label><input id="mw{{ e.sex }}" name="min_weight" type="number" step="0.1" value="{{ e.min_weight_kg }}"></div>
+   <div class="field"><label for="mh{{ e.sex }}">Minimum hemoglobin (g/L)</label><input id="mh{{ e.sex }}" name="min_hb" type="number" step="0.1" value="{{ e.min_hemoglobin_gl }}"></div></div><button class="btn teal sm" style="margin-top:12px">Save</button></form>{% endfor %}</div></div>
+
+<div class="card" id="reasons"><header><h3>Deferral reasons</h3></header><div class="tablewrap"><table><thead><tr><th>Code</th><th>Reason</th><th>Length</th></tr></thead><tbody>
+ {% for x in r.reasons %}<tr><td class="mono">{{ x.reason_code }}</td><td>{{ x.description }}</td><td>{% if x.is_permanent %}<span class="pill red">Permanent</span>{% else %}{{ x.default_days }} days{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+ <form method="post" action="{{ url_for('admin_rule_reason') }}" class="card" style="margin-top:16px;box-shadow:none;background:var(--surface-2)" novalidate>{{ m.csrf_field() }}<h3 style="margin-bottom:12px">Add or update a reason</h3>
+  <div class="form-grid">{{ m.field('code','Code', hint='2 to 10 letters, such as ZIKA.', attrs='maxlength="10"') }}{{ m.field('description','Description') }}{{ m.field('default_days','Default days','number', required=false, attrs='min="1"') }}
+   <label class="check" style="align-self:end"><input type="checkbox" name="permanent" value="1"> Permanent</label></div><button class="btn teal sm" style="margin-top:12px">Save reason</button></form></div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Inventory{% endblock %}{% block crumb %}Inventory{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Inventory</h1><p>Every unit at {{ overview.facility.name }}. Soonest expiry first.</p></div></div>
+<div class="card"><header><h3>Units</h3>
+ <form method="get" class="row" style="align-items:flex-end">
+  <div style="width:150px"><label class="sr" for="fs">Status</label><select id="fs" name="status" onchange="this.form.submit()"><option value="">Any status</option>{% for s in ['Available','Reserved','Collected','Quarantined','Issued','Expired','Discarded'] %}<option {% if f.get('status') == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></div>
+  <div style="width:150px"><label class="sr" for="fc">Component</label><select id="fc" name="component" onchange="this.form.submit()"><option value="">Any component</option>{% for c, n in COMPONENTS %}<option value="{{ c }}" {% if f.get('component') == c %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></div>
+  <div style="width:130px"><label class="sr" for="fg">Group</label><select id="fg" name="group" onchange="this.form.submit()"><option value="">Any group</option>{% for g in GROUPS %}<option {% if f.get('group') == g %}selected{% endif %}>{{ g }}</option>{% endfor %}</select></div>
+  <noscript><button class="btn ghost sm">Apply</button></noscript></form></header>
+{% if units %}<div class="tablewrap"><table><thead><tr><th>Unit</th><th>Component</th><th>Group</th><th>Collected</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody>
+{% for u in units %}<tr><td class="mono">{{ u.unit_id }}</td><td>{{ u.component_code|comp }}</td><td>{{ m.bt(u.blood_group) }}</td><td>{{ m.time(u.collected_at, date=true) }}</td>
+ <td class="nowrap">{{ m.time(u.expires_at, rel=true) }}</td><td>{{ m.status(u.status) }}</td>
+ <td>{% if u.status == 'Available' %}<form method="post" action="{{ url_for('staff_unit_discard', unit_id=u.unit_id) }}" class="row" style="flex-wrap:nowrap">{{ m.csrf_field() }}
+  <select name="reason" aria-label="Discard reason for {{ u.unit_id }}" style="min-height:34px;padding:4px 8px;width:150px"><option>Damaged bag</option><option>Contamination suspected</option><option>Temperature excursion</option><option>Other</option></select>
+  <button class="btn danger sm" data-confirm="Unit {{ u.unit_id }} will be permanently discarded." data-title="Discard unit?" data-go="Discard">Discard</button></form>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}{{ m.empty('No units match these filters.') }}{% endif %}</div>
+
+<div class="card" id="thresholds"><header><h3>Minimum stock levels</h3><span class="muted">An alert opens when available units drop below the minimum.</span></header>
+ <form method="post" action="{{ url_for('staff_threshold') }}" class="row" style="margin-bottom:18px">{{ m.csrf_field() }}
+  <div style="width:130px">{{ m.select('blood_group','Group',GROUPS) }}</div><div style="width:170px">{{ m.select('component','Component',COMPONENTS) }}</div>
+  <div style="width:130px">{{ m.field('min_units','Minimum','number', attrs='min="0" max="999"', value='5') }}</div><button class="btn teal" type="submit">Save minimum</button></form>
+ {% if thresholds %}<div class="tablewrap"><table><thead><tr><th>Group</th><th>Component</th><th>Minimum</th></tr></thead><tbody>
+ {% for t in thresholds %}<tr><td>{{ m.bt(t.blood_group) }}</td><td>{{ t.component_code|comp }}</td><td><form method="post" action="{{ url_for('staff_threshold') }}" class="row" style="flex-wrap:nowrap">{{ m.csrf_field() }}
+  <input type="hidden" name="blood_group" value="{{ t.blood_group }}"><input type="hidden" name="component" value="{{ t.component_code }}">
+  <input name="min_units" type="number" min="0" value="{{ t.min_units }}" aria-label="Minimum for {{ t.blood_group }} {{ t.component_code }}" style="width:90px;min-height:34px"><button class="btn ghost sm">Update</button></form></td></tr>{% endfor %}</tbody></table></div>
+ {% else %}{{ m.empty('No minimums set yet.') }}{% endif %}</div>
+{% endblock %}
