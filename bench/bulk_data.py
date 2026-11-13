@@ -71,7 +71,7 @@ class Seeder:
                           for c in ("RBC", "PLASMA", "PLT")}
         self.shelf = dict(self.q("SELECT component_code, shelf_life_days FROM component_type"))
         self.interval = {(t, s): d for t, s, d in self.q("SELECT * FROM donation_interval")}
-        self.rule = {s: (a, float(w), float(h)) for s, a, w, h in self.q("SELECT * FROM eligibility_rule")}
+        self.rule = {s: (a, float(w), float(h)) for s, a, w, h in self.q("SELECT sex, min_age_years, min_weight_kg, min_hemoglobin_gl FROM eligibility_rule")}
         self.tests = [t for (t,) in self.q("SELECT test_code FROM test_type WHERE is_active ORDER BY 1")]
         self.questions = self.q("SELECT question_id, reason_code, defer_on_answer FROM screening_question WHERE is_active")
         self.reason_days = dict(self.q("SELECT reason_code, default_days FROM deferral_reason"))
@@ -117,10 +117,11 @@ class Seeder:
             weight = round(rng.uniform(52, 110), 1) if i % 89 else 47.5
             if weight < 50:
                 kind = "never"
+            height = round(rng.uniform(152, 176) if sex == "F" else rng.uniform(164, 193), 1)   # keeps the estimated blood volume above 3 L
             dob = (self.start - dt.timedelta(days=age_at_start * 365.25)).date()
             uid = self.user(f"donor{i}@vytal.ca", "Donor", reg)
-            self.q("INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg,address,blood_group) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                   (uid, f"D-{uid:06d}", dob, sex, weight, f"{rng.randint(1, 999)} King St, {rng.choice(CITIES)}, ON",
+            self.q("INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg,height_cm,address,blood_group) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                   (uid, f"D-{uid:06d}", dob, sex, weight, height, f"{rng.randint(1, 999)} King St, {rng.choice(CITIES)}, ON",
                     group if kind != "never" or rng.random() < .5 else None))
             first_visit = max(reg, self.start) + dt.timedelta(days=rng.uniform(1, 60))
             home = rng.choice(self.facilities) if rng.random() < .15 else rng.choice(self.hospitals)

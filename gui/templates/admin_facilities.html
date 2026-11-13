@@ -2,26 +2,26 @@
 {% block content %}
 <div class="page-head"><div><h1>Facilities</h1><p>Hospitals and blood banks that use Vytal. A facility with open requests cannot be deactivated.</p></div><a class="btn red" href="#edit">Add a facility</a></div>
 <div class="grid g2">{% for x in items %}<div class="card lift" style="{{ 'opacity:.7' if not x.is_active }}">
- <header><div><h3>{{ x.name }}</h3><span class="muted">{{ x.facility_type }}</span></div><span class="pill {{ 'green' if x.is_active else 'grey' }}">{{ 'Active' if x.is_active else 'Deactivated' }}</span></header>
+ <header><div><h2 class="h3">{{ x.name }}</h2><span class="muted">{{ x.facility_type }}</span></div><span class="pill {{ 'green' if x.is_active else 'grey' }}">{{ 'Active' if x.is_active else 'Deactivated' }}</span></header>
  <p>{{ x.address }}</p><p class="muted">{{ x.phone or 'No phone' }} · {{ x.email or 'No email' }}</p>
  <div class="row" style="margin:14px 0"><span class="pill teal">{{ x.units }} units</span><span class="pill grey">{{ x.staff }} staff</span><span class="pill {{ 'amber' if x.open_requests else 'grey' }}">{{ x.open_requests }} open requests</span></div>
  <div class="actions"><a class="btn ghost sm" href="{{ url_for('admin_facilities', thresholds=x.facility_id) }}#th">Minimums</a>
   <details><summary class="btn ghost sm" style="list-style:none;cursor:pointer">Edit</summary>
    <form method="post" action="{{ url_for('admin_facility_save') }}" style="display:grid;gap:10px;margin-top:10px;min-width:260px">{{ m.csrf_field() }}<input type="hidden" name="facility_id" value="{{ x.facility_id }}">
-    <label class="sr" for="n{{ x.facility_id }}">Name</label><input id="n{{ x.facility_id }}" name="name" value="{{ x.name }}" required>
+    <label class="sr" for="n{{ x.facility_id }}">Name</label><input id="n{{ x.facility_id }}" name="name" value="{{ x.name }}" maxlength="100" required>
     <label class="sr" for="t{{ x.facility_id }}">Type</label><select id="t{{ x.facility_id }}" name="facility_type"><option {{ 'selected' if x.facility_type == 'Hospital' }}>Hospital</option><option {{ 'selected' if x.facility_type == 'Blood Bank' }}>Blood Bank</option></select>
-    <label class="sr" for="a{{ x.facility_id }}">Address</label><input id="a{{ x.facility_id }}" name="address" value="{{ x.address }}" required>
-    <label class="sr" for="p{{ x.facility_id }}">Phone</label><input id="p{{ x.facility_id }}" name="phone" value="{{ x.phone or '' }}" placeholder="Phone">
-    <label class="sr" for="e{{ x.facility_id }}">Email</label><input id="e{{ x.facility_id }}" name="email" type="email" value="{{ x.email or '' }}" placeholder="Email"><button class="btn teal sm">Save</button></form></details>
+    <label class="sr" for="a{{ x.facility_id }}">Address</label><input id="a{{ x.facility_id }}" name="address" value="{{ x.address }}" maxlength="200" required>
+    <label class="sr" for="p{{ x.facility_id }}">Phone</label><input id="p{{ x.facility_id }}" name="phone" value="{{ x.phone or '' }}" maxlength="30" type="tel" placeholder="Phone">
+    <label class="sr" for="e{{ x.facility_id }}">Email</label><input id="e{{ x.facility_id }}" name="email" type="email" value="{{ x.email or '' }}" maxlength="254" placeholder="Email"><button class="btn teal sm">Save</button></form></details>
   <form method="post" action="{{ url_for('admin_facility_active', facility_id=x.facility_id) }}">{{ m.csrf_field() }}<input type="hidden" name="active" value="{{ '0' if x.is_active else '1' }}">
    {% if x.is_active %}<button class="btn danger sm" data-confirm="{{ x.name }} will be deactivated. This is refused while it has open requests." data-title="Deactivate facility?" data-go="Deactivate">Deactivate</button>{% else %}<button class="btn ghost sm">Reactivate</button>{% endif %}</form></div></div>{% endfor %}</div>
 
-{% if th %}<div class="card" id="th"><header><h3>Minimum stock levels · {{ (items|selectattr('facility_id','equalto',th[0])|first).name }}</h3></header>
+{% if th %}<div class="card" id="th"><header><h2 class="h3">Minimum stock levels · {{ (items|selectattr('facility_id','equalto',th[0])|first).name }}</h2></header>
  <form method="post" action="{{ url_for('admin_facility_threshold', facility_id=th[0]) }}" class="row" style="margin-bottom:14px">{{ m.csrf_field() }}
-  <div style="width:130px">{{ m.select('blood_group','Group',GROUPS) }}</div><div style="width:170px">{{ m.select('component','Component',COMPONENTS) }}</div><div style="width:130px">{{ m.field('min_units','Minimum','number', value='5', attrs='min="0"') }}</div><button class="btn teal">Save minimum</button></form>
+  <div style="width:130px">{{ m.select('blood_group','Group',GROUPS) }}</div><div style="width:170px">{{ m.select('component','Component',COMPONENTS) }}</div><div style="width:130px">{{ m.field('min_units','Minimum','number', value='5', attrs='min="0" max="999" step="1"') }}</div><button class="btn teal">Save minimum</button></form>
  <div class="chips">{% for t in th[1] %}<span class="chip"><span>{{ t.blood_group }} · {{ t.component_code|comp }} <b class="mono">{{ t.min_units }}</b></span></span>{% endfor %}</div></div>{% endif %}
 
-<form class="card" id="edit" method="post" action="{{ url_for('admin_facility_save') }}" novalidate>{{ m.csrf_field() }}<header><h3>Add a facility</h3></header>
- <div class="form-grid">{{ m.field('name','Name') }}{{ m.select('facility_type','Type',['Hospital','Blood Bank']) }}<div class="full">{{ m.field('address','Address') }}</div>{{ m.field('phone','Phone', required=false) }}{{ m.field('email','Email','email', required=false) }}</div>
+<form class="card" id="edit" method="post" action="{{ url_for('admin_facility_save') }}" novalidate>{{ m.csrf_field() }}<header><h2 class="h3">Add a facility</h2></header>
+ <div class="form-grid">{{ m.field('name','Name', attrs='maxlength="100"') }}{{ m.select('facility_type','Type',['Hospital','Blood Bank']) }}<div class="full">{{ m.field('address','Address', attrs='maxlength="200"') }}</div>{{ m.field('phone','Phone','tel', required=false, attrs='maxlength="30"') }}{{ m.field('email','Email','email', required=false, attrs='maxlength="254"') }}</div>
  <button class="btn red" type="submit" style="margin-top:14px">Add facility</button></form>
 {% endblock %}

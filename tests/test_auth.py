@@ -41,7 +41,7 @@ def test_registration_refuses_passwords_bcrypt_would_truncate(password, ok, monk
     def refuse(*a, **k):
         raise AssertionError("validation should run before any database work")
     monkeypatch.setattr(svc, "session", refuse)
-    args = ("p@v.ca", password, "A", "B", None, dt.date(1990, 1, 1), "M", 70, "1 Main St")
+    args = ("p@v.ca", password, "A", "B", None, dt.date(1990, 1, 1), "M", 70, 178, "1 Main St")
     if ok:
         with pytest.raises(AssertionError, match="validation should run"):
             svc.register_donor(*args)

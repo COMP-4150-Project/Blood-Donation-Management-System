@@ -50,8 +50,20 @@ BEGIN PERFORM recompute_next_eligible(NEW.donor_id); RETURN NULL; END $$;
 CREATE TRIGGER donation_eligible AFTER INSERT ON donation FOR EACH ROW EXECUTE FUNCTION trg_recompute_eligible();
 CREATE TRIGGER deferral_eligible AFTER INSERT OR UPDATE ON deferral FOR EACH ROW EXECUTE FUNCTION trg_recompute_eligible();
 
+-- ---------------------------------------------------------------- estimated blood volume (Nadler formula)
+-- Litres = k1 * height_m^3 + k2 * weight_kg + k3, returned in whole millilitres. Height and weight together say how much
+-- blood a body holds, which a weight limit alone does not (a short, heavy donor and a tall, light one differ). Schema-qualified
+-- like donor_eligibility so it works under a pinned search_path and the planner can inline it.
+CREATE FUNCTION estimated_blood_volume_ml(p_sex char, p_height_cm numeric, p_weight_kg numeric) RETURNS numeric
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT round(1000 * CASE p_sex
+        WHEN 'M' THEN 0.3669 * (p_height_cm / 100) * (p_height_cm / 100) * (p_height_cm / 100) + 0.03219 * p_weight_kg + 0.6041
+        WHEN 'F' THEN 0.3561 * (p_height_cm / 100) * (p_height_cm / 100) * (p_height_cm / 100) + 0.03308 * p_weight_kg + 0.1833
+        END)
+$$;
+
 -- ---------------------------------------------------------------- FR-11 / DI-03 no donation for an ineligible donor
--- Age, weight and hemoglobin thresholds are the Canadian Blood Services values named in FR-07 / UC-07.
+-- Age, weight, estimated blood volume and hemoglobin thresholds are the Canadian Blood Services values named in FR-07 / UC-07.
 CREATE FUNCTION check_donation_eligible() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE o donor%ROWTYPE; active boolean; er eligibility_rule%ROWTYPE;
 BEGIN
@@ -63,6 +75,8 @@ BEGIN
     IF age((NEW.donated_at AT TIME ZONE 'UTC')::date, o.date_of_birth) < make_interval(years => er.min_age_years) THEN
         RAISE EXCEPTION 'donor is under %', er.min_age_years; END IF;
     IF o.weight_kg < er.min_weight_kg THEN RAISE EXCEPTION 'donor weighs under % kg', trim_scale(er.min_weight_kg); END IF;
+    IF estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg) < er.min_blood_volume_ml THEN
+        RAISE EXCEPTION 'donor''s estimated blood volume is under % ml: check height and weight', er.min_blood_volume_ml; END IF;
     IF NEW.hemoglobin_gl < er.min_hemoglobin_gl THEN
         RAISE EXCEPTION 'hemoglobin % g/L is below the minimum for this donor', NEW.hemoglobin_gl; END IF;
     IF o.next_eligible_date IS NOT NULL AND o.next_eligible_date > (NEW.donated_at AT TIME ZONE 'UTC')::date THEN
@@ -185,9 +199,9 @@ FROM blood_request r LEFT JOIN request_unit ru USING (request_id) GROUP BY r.req
 
 CREATE VIEW v_inventory AS               -- FR-17
 SELECT facility_id, blood_group, component_code,
-       count(*) FILTER (WHERE status = 'Available') AS available,
+       count(*) FILTER (WHERE status = 'Available' AND expires_at > now()) AS available,      -- a unit past its date is not stock
        count(*) FILTER (WHERE status = 'Reserved') AS reserved,
-       count(*) FILTER (WHERE status = 'Available' AND expires_at < now() + interval '48 hours') AS expiring_48h
+       count(*) FILTER (WHERE status = 'Available' AND expires_at > now() AND expires_at < now() + interval '48 hours') AS expiring_48h
 FROM v_blood_unit GROUP BY 1, 2, 3;
 
 -- ---------------------------------------------------------------- FR-19 low-stock alerts (one open alert per threshold)
@@ -198,7 +212,8 @@ BEGIN
     WHERE facility_id = p_fac AND blood_group = p_group AND component_code = p_comp;
     IF minu IS NULL THEN RETURN; END IF;
     SELECT count(*) INTO avail FROM v_blood_unit
-    WHERE facility_id = p_fac AND blood_group = p_group AND component_code = p_comp AND status = 'Available';
+    WHERE facility_id = p_fac AND blood_group = p_group AND component_code = p_comp AND status = 'Available'
+      AND expires_at > now();
     IF avail < minu THEN
         INSERT INTO stock_alert (facility_id, blood_group, component_code) VALUES (p_fac, p_group, p_comp)
         ON CONFLICT (facility_id, blood_group, component_code) WHERE cleared_at IS NULL DO NOTHING;
@@ -281,8 +296,10 @@ END $$;
 CREATE PROCEDURE close_request(p_request int, p_cancel boolean DEFAULT FALSE, p_units text[] DEFAULT NULL,
                                INOUT final_status text DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE issued int; req int; st text; stray text; actor int := require_actor('{Staff}');
+DECLARE issued int; req int; st text; stray text; active int; actor int := require_actor('{Staff}');
 BEGIN
+    IF NOT p_cancel AND p_units IS NOT NULL AND cardinality(p_units) = 0 THEN        -- nothing ticked: never close with 0 issued
+        RAISE EXCEPTION 'select at least one reserved unit to issue, or cancel the request'; END IF;
     SELECT units_requested, status INTO req, st FROM blood_request WHERE request_id = p_request FOR UPDATE;
     IF st IS DISTINCT FROM 'Open' THEN RAISE EXCEPTION 'request % is not open', p_request; END IF;
     PERFORM require_own_facility(actor, (SELECT facility_id FROM v_request WHERE request_id = p_request), format('request %s', p_request));
@@ -305,6 +322,9 @@ BEGIN
             UPDATE request_unit SET released_at = now() WHERE request_id = p_request AND released_at IS NULL
               AND issued_at IS NULL AND unit_id <> ALL (p_units);
         END IF;
+        SELECT count(*) INTO active FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL;
+        IF active = 0 THEN
+            RAISE EXCEPTION 'request % has no unexpired reserved units to issue; cancel the request instead', p_request; END IF;
         UPDATE blood_unit SET status = 'Issued' WHERE unit_id IN
             (SELECT unit_id FROM request_unit WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL);
         UPDATE request_unit SET issued_at = now() WHERE request_id = p_request AND released_at IS NULL AND issued_at IS NULL;
@@ -356,6 +376,8 @@ RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE
                 WHEN o.next_eligible_date = 'infinity' THEN 'Permanently deferred'    -- UC-06 2a: shown before the flag
                 WHEN o.is_flagged THEN 'Not eligible (flagged after a failed test)'
                 WHEN o.weight_kg < r.min_weight_kg THEN format('Not eligible (under %s kg)', trim_scale(r.min_weight_kg))
+                WHEN vytal.estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg) < r.min_blood_volume_ml
+                    THEN format('Not eligible (estimated blood volume under %s L: check height and weight)', round(r.min_blood_volume_ml / 1000.0, 1))
                 WHEN w.from_date > p_on THEN 'Not eligible until ' || w.from_date
                 WHEN NOT EXISTS (SELECT 1 FROM vytal.screening s WHERE s.donor_id = o.user_id)
                     THEN 'Complete screening to confirm eligibility'
@@ -364,13 +386,18 @@ RETURNS TABLE (status text, eligible_from date, reason text) LANGUAGE sql STABLE
                     THEN 'Screening older than 24 hours, repeat before donating'
                 ELSE 'Eligible' END,
            CASE WHEN a.is_active AND NOT o.is_flagged AND o.next_eligible_date IS DISTINCT FROM 'infinity'
-                     AND o.weight_kg >= r.min_weight_kg AND w.from_date > p_on THEN w.from_date END,
+                     AND o.weight_kg >= r.min_weight_kg
+                     AND vytal.estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg) >= r.min_blood_volume_ml AND w.from_date > p_on THEN w.from_date END,
            CASE WHEN NOT a.is_active THEN 'The account is deactivated'
                 WHEN o.next_eligible_date = 'infinity' THEN
                     (SELECT dr.description FROM vytal.deferral d JOIN vytal.deferral_reason dr USING (reason_code)
                      WHERE d.donor_id = o.user_id AND d.end_date IS NULL ORDER BY d.deferral_id DESC LIMIT 1)
                 WHEN o.is_flagged THEN 'A test on an earlier donation was positive'
                 WHEN o.weight_kg < r.min_weight_kg THEN format('Donors must weigh at least %s kg', trim_scale(r.min_weight_kg))
+                WHEN vytal.estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg) < r.min_blood_volume_ml
+                    THEN format('Height and weight give an estimated blood volume of %s L; donors need at least %s L',
+                                round(vytal.estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg) / 1000.0, 1),
+                                round(r.min_blood_volume_ml / 1000.0, 1))
                 WHEN w.from_date > p_on THEN coalesce(
                     (SELECT dr.description FROM vytal.deferral d JOIN vytal.deferral_reason dr USING (reason_code)
                      WHERE d.donor_id = o.user_id AND d.end_date = w.from_date ORDER BY d.deferral_id DESC LIMIT 1),

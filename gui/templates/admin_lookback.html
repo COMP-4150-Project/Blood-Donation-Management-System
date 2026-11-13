@@ -2,22 +2,22 @@
 {% block content %}
 <div class="page-head"><div><h1>Lookback trace</h1><p>Follow a donor's blood from donation to patient. If a donor turns out to be unsafe, quarantine everything they gave and see which units were already issued.</p></div></div>
 <form class="card" method="get"><div class="row" style="align-items:flex-end">
- <div style="width:220px">{{ m.field('code','Donor code', required=false, value=code or '', ph='D-1042') }}</div><span class="muted" style="padding-bottom:12px">or</span>
- <div style="width:220px">{{ m.field('unit','Unit id', required=false, value=unit or '', ph='U39-PLASMA') }}</div><button class="btn red" type="submit">Trace</button></div>
+ <div style="width:220px">{{ m.field('code','Donor code', required=false, value=code or '', ph='D-1042', attrs='maxlength="20" autocomplete="off"') }}</div><span class="muted" style="padding-bottom:12px">or</span>
+ <div style="width:220px">{{ m.field('unit','Unit id', required=false, value=unit or '', ph='U39-PLASMA', attrs='maxlength="40" autocomplete="off"') }}</div><button class="btn red" type="submit">Trace</button></div>
  {% if error %}<div class="ferr" role="alert" style="margin-top:10px">{{ error }}</div>{% endif %}</form>
-{% if trace is not none %}<div class="card"><header><h3>{{ trace|length }} unit{{ '' if trace|length == 1 else 's' }} traced</h3>
+{% if trace is not none %}<div class="card"><header><h2 class="h3">{{ trace|length }} unit{{ '' if trace|length == 1 else 's' }} traced</h2>
  <div class="actions">{% if code %}<a class="btn ghost sm" href="{{ url_for('admin_lookback_csv', code=code) }}">Issued units CSV</a>{% endif %}</div></header>
- {% if trace %}<div class="tablewrap"><table><thead><tr><th>Donation</th><th>Date</th><th>Unit</th><th>Component</th><th>Status</th><th>Request</th><th>Issued</th></tr></thead><tbody>
+ {% if trace %}<div class="tablewrap"><table><thead><tr><th scope="col">Donation</th><th scope="col">Date</th><th scope="col">Unit</th><th scope="col">Component</th><th scope="col">Status</th><th scope="col">Request</th><th scope="col">Issued</th></tr></thead><tbody>
  {% for t in trace %}<tr><td class="mono">#{{ t[0] }}</td><td>{{ m.time(t[1], date=true) }}</td><td class="mono">{{ t[2] }}</td><td>{{ t[3]|comp }}</td><td>{{ m.status(t[4]) }}</td><td class="mono">{{ ('#' ~ t[6]) if t[6] else '—' }}</td><td>{{ m.time(t[8]) if t[8] else '—' }}</td></tr>{% endfor %}</tbody></table></div>
  {% else %}{{ m.empty('This donor has no donated units.') }}{% endif %}
  {% if code %}<div class="grid g2" style="margin-top:18px">
-  <form method="post" action="{{ url_for('admin_quarantine') }}" class="card" style="box-shadow:none;border-color:var(--red)">{{ m.csrf_field() }}<input type="hidden" name="code" value="{{ code }}"><h3>Quarantine donor</h3>
+  <form method="post" action="{{ url_for('admin_quarantine') }}" class="card" style="box-shadow:none;border-color:var(--red)">{{ m.csrf_field() }}<input type="hidden" name="code" value="{{ code }}"><h2 class="h3">Quarantine donor</h2>
    <p class="muted" style="margin:8px 0 12px">Pulls this donor's Available and Reserved units, flags the donor, and re-allocates affected requests.</p>
    <button class="btn danger" data-confirm="All of {{ code }}'s Available and Reserved units will be quarantined and the donor flagged." data-title="Quarantine {{ code }}?" data-go="Quarantine">Quarantine all units</button></form>
-  <form method="post" action="{{ url_for('admin_clear') }}" class="card" style="box-shadow:none">{{ m.csrf_field() }}<input type="hidden" name="code" value="{{ code }}"><h3>Investigation cleared</h3>
-   {{ m.field('note','Why was it cleared?', ph='Repeat test negative') }}<button class="btn teal" style="margin-top:12px" data-confirm="Quarantined units go back on the shelf and the flag is lifted." data-title="Clear the lookback?" data-go="Clear">Release units</button></form></div>{% endif %}</div>{% endif %}
-<div class="card"><header><h3>Units in quarantine</h3></header>
-{% if quarantined %}<div class="tablewrap"><table><thead><tr><th>Unit</th><th>Component</th><th>Group</th><th>Held at</th><th>Since</th><th></th></tr></thead><tbody>
+  <form method="post" action="{{ url_for('admin_clear') }}" class="card" style="box-shadow:none">{{ m.csrf_field() }}<input type="hidden" name="code" value="{{ code }}"><h2 class="h3">Investigation cleared</h2>
+   {{ m.field('note','Why was it cleared?', ph='Repeat test negative', attrs='maxlength="200"') }}<button class="btn teal" style="margin-top:12px" data-confirm="Quarantined units go back on the shelf and the flag is lifted." data-title="Clear the lookback?" data-go="Clear">Release units</button></form></div>{% endif %}</div>{% endif %}
+<div class="card"><header><h2 class="h3">Units in quarantine</h2></header>
+{% if quarantined %}<div class="tablewrap"><table><thead><tr><th scope="col">Unit</th><th scope="col">Component</th><th scope="col">Group</th><th scope="col">Held at</th><th scope="col">Since</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
 {% for u in quarantined %}<tr><td class="mono">{{ u.unit_id }}</td><td>{{ u.component_code|comp }}</td><td>{{ m.bt(u.blood_group) }}</td><td>{{ u.facility }}</td><td>{{ m.time(u.status_changed_at, rel=true) }}</td>
  <td><form method="post" action="{{ url_for('admin_unit_discard', unit_id=u.unit_id) }}">{{ m.csrf_field() }}<input type="hidden" name="reason" value="Confirmed unsafe by lookback"><button class="btn danger sm" data-confirm="Unit {{ u.unit_id }} will be permanently discarded." data-title="Discard unit?" data-go="Discard">Discard</button></form></td></tr>{% endfor %}</tbody></table></div>
 {% else %}{{ m.empty('No units are in quarantine.') }}{% endif %}</div>

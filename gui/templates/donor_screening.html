@@ -1,14 +1,25 @@
 {% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Health screening{% endblock %}{% block crumb %}Donor · Screening{% endblock %}
 {% block content %}
+{# Optional from the backend: answers = {question_id: 'yes'|'no'|True|False} kept after a refused submit; donor_sex = 'F'|'M' #}
+{% set ans = answers|default({}) or {} %}
+{% set sx = donor_sex|default(none) %}
+{% set ns = namespace(n=0, missing=[]) %}
+{% set sub = namespace(on=ans|length > 0) %}{% for k in form.keys() %}{% if k[:1] == 'q' and k[1:].isdigit() %}{% set sub.on = true %}{% endif %}{% endfor %}{% set submitted = sub.on %}
+{% macro given(q) -%}{%- set k = 'q' ~ q.question_id -%}{%- set a = form.get(k) -%}{%- if a is none -%}{%- set a = ans.get(q.question_id, ans.get(q.question_id|string)) -%}{%- endif -%}{%- if a is sameas true or a == 'yes' -%}yes{%- elif a is sameas false or a == 'no' -%}no{%- endif -%}{%- endmacro %}
+{% for q in qs %}{% if not ('pregnan' in q.question_text|lower and sx == 'M') %}{% if submitted and given(q)|trim == '' %}{% set _ = ns.missing.append(q.question_id) %}{% endif %}{% endif %}{% endfor %}
 <div class="page-head"><div><h1>Health screening</h1><p>Answer honestly. Your answers are private to you and the clinic team, and they decide whether you can donate today.</p></div></div>
 <form class="card" method="post" style="display:grid;gap:4px;max-width:760px" novalidate>
  {{ m.csrf_field() }}
- {% for q in qs %}<fieldset style="border:0;padding:16px 0;margin:0;border-top:{{ '0' if loop.first else '1px solid var(--line-2)' }};display:grid;gap:10px">
-  <legend style="font-weight:600;padding:0 0 8px">{{ loop.index }}. {{ q.question_text }}</legend>
+ {% if ns.missing %}<div class="ferr" role="alert" id="miss">Please answer every question. Your other answers are kept. Still to answer: {% for q in qs %}{% if q.question_id in ns.missing %}{{ q.question_text }}{{ '; ' if not loop.last and ns.missing|length > 1 else '' }}{% endif %}{% endfor %}</div>{% endif %}
+ {% for q in qs %}
+ {% if 'pregnan' in q.question_text|lower and sx == 'M' %}<input type="hidden" name="q{{ q.question_id }}" value="no">
+ {% else %}{% set ns.n = ns.n + 1 %}{% set g = given(q)|trim %}{% set miss = q.question_id in ns.missing %}
+ <fieldset {% if miss %}aria-describedby="m{{ q.question_id }}"{% endif %} style="border:0;padding:16px 0;margin:0;border-top:{{ '0' if ns.n == 1 else '1px solid var(--line-2)' }};display:grid;gap:10px">
+  <legend style="font-weight:600;padding:0 0 8px">{{ ns.n }}. {{ q.question_text }}</legend>
   <div class="chips">
-   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="yes" required {% if form.get('q'~q.question_id) == 'yes' %}checked{% endif %}><span>Yes</span></label>
-   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="no" {% if form.get('q'~q.question_id) == 'no' %}checked{% endif %}><span>No</span></label>
-  </div></fieldset>{% endfor %}
+   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="yes" required {% if g == 'yes' %}checked{% endif %}><span>Yes</span></label>
+   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="no" {% if g == 'no' %}checked{% endif %}><span>No</span></label>
+  </div>{% if miss %}<div class="ferr" id="m{{ q.question_id }}">Please answer this question.</div>{% endif %}</fieldset>{% endif %}{% endfor %}
  <div class="actions" style="margin-top:8px"><button class="btn red" type="submit">Submit answers</button><a class="btn ghost" href="{{ url_for('donor_home') }}">Cancel</a></div>
 </form>
 {% endblock %}

@@ -4,7 +4,7 @@
 <form class="card" method="get" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
  <div style="width:170px">{{ m.select('group','Patient blood group',GROUPS, value=group, blank='Choose') }}</div>
  <div style="width:190px">{{ m.select('component','Component',COMPONENTS, value=comp) }}</div><button class="btn red" type="submit">Search</button></form>
-{% if found is not none %}<div class="card"><header><h3>{{ found|length }} matching donor{{ '' if found|length == 1 else 's' }}</h3></header>
+{% if found is not none %}<div class="card"><header><h2 class="h3">{{ found|length }} matching donor{{ '' if found|length == 1 else 's' }}</h2></header>
  {% if found %}<div class="chips">{% for d in found %}<span class="chip"><span><b class="mono">{{ d[0] }}</b> {{ d[1]|replace('-','−') }}</span></span>{% endfor %}</div>
  <p class="muted" style="margin-top:14px">To call them, open a request and use "Send donation call".</p>{% else %}{{ m.empty('No eligible, verified donor can give this component to that group right now.') }}{% endif %}</div>{% endif %}
 {% endblock %}

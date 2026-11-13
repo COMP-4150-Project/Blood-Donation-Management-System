@@ -3,15 +3,15 @@
 <div class="page-head"><div><h1>Donors</h1><p>Look up a donor by code to screen, verify a blood group, record a donation or a deferral.</p></div></div>
 <div class="card"><header>
  <form method="get" class="row" style="align-items:flex-end">
-  <div style="width:min(100%,240px)"><label class="sr" for="dq">Donor code</label><input id="dq" name="q" type="search" value="{{ f.get('q','') }}" placeholder="Donor code, e.g. D-1042" autofocus></div>
+  <div style="width:min(100%,240px)"><label class="sr" for="dq">Donor code</label><input id="dq" name="q" type="search" value="{{ f.get('q','') }}" placeholder="Donor code, e.g. D-1042" maxlength="20" autocomplete="off" autofocus></div>
   <div style="width:140px"><label class="sr" for="dg">Group</label><select id="dg" name="group"><option value="">Any group</option>{% for g in GROUPS %}<option {% if f.get('group') == g %}selected{% endif %}>{{ g }}</option>{% endfor %}</select></div>
   <label class="check"><input type="checkbox" name="ready" value="1" {% if f.get('ready') == '1' %}checked{% endif %}> Ready to donate only</label>
   <button class="btn teal" type="submit">Search</button></form></header>
-{% if items %}<div class="tablewrap"><table><thead><tr><th>Donor</th><th>Group</th><th>Status</th><th>Next eligible</th><th></th></tr></thead><tbody>
+{% if items %}<div class="tablewrap"><table><thead><tr><th scope="col">Donor</th><th scope="col">Group</th><th scope="col">Status</th><th scope="col">Next eligible</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
 {% for d in items %}<tr><td class="mono"><b>{{ d.donor_code }}</b></td><td>{{ m.bt(d.blood_group) }}{% if d.blood_group and not d.group_verified %} <span class="pill amber">Unverified</span>{% endif %}</td>
  <td>{% set s = d.status %}<span class="pill {{ 'green' if s == 'Eligible' else ('amber' if ('Screening' in s or 'Complete' in s) else 'red') }}">{{ s }}</span></td>
  <td class="nowrap">{{ 'Never' if d.permanent else (m.time(d.next_eligible_date, date=true) if d.next_eligible_date else 'Now') }}</td>
  <td><a class="btn ghost sm" href="{{ url_for('staff_donor', donor_id=d.user_id) }}">Open</a></td></tr>{% endfor %}</tbody></table></div>
-<p class="muted" style="margin-top:12px">Showing up to 150 donors.</p>
-{% else %}{{ m.empty('No donor matches that search.') }}{% endif %}</div>
+{% if shown is defined and total is defined %}{{ m.shown_note(shown, total, 'donors') }}{% else %}<p class="muted" style="margin-top:12px">Showing up to 150 donors.</p>{% endif %}
+{% else %}{{ m.empty('No donor matches that search. Check the code or clear the filters.') }}{% endif %}</div>
 {% endblock %}

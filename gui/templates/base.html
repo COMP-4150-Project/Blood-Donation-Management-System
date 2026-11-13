@@ -2,9 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{% block title %}Vytal{% endblock %} · Vytal</title>
 <meta name="theme-color" content="#D4282E">
-<script>try{var t=localStorage.getItem('vytal-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem('vytal-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=config.ASSET_V) }}">
 </head><body data-csrf="{{ csrf() }}" data-base="{{ request.script_root }}">
@@ -18,8 +16,10 @@
 {% block shell %}
 {% set role = user.role %}
 <div class="app">
- <aside class="side" aria-label="Main">
-  <div class="brand">{{ m.logo('1.9rem') }}</div>
+ <aside class="side" id="side" aria-label="Site menu">
+  <div class="side-bar"><div class="brand">{{ m.logo('1.9rem') }}</div>
+   <button class="menu-btn" id="menu" type="button" aria-expanded="false" aria-controls="side-panel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span>Menu</span></button></div>
+  <div class="side-panel" id="side-panel">
   <nav class="nav" aria-label="Sections">
   {% macro item(endpoint, ic, text, also=[], count=0) %}<a href="{{ url_for(endpoint) }}" {% if request.endpoint == endpoint or request.endpoint in also %}aria-current="page"{% endif %}>{{ m.icon(ic) }}<span class="t">{{ text }}</span>{% if count %}<span class="count">{{ count }}</span>{% endif %}</a>{% endmacro %}
   {% if role == 'Donor' %}
@@ -51,20 +51,21 @@
    <div class="who"><span class="avatar" aria-hidden="true">{{ user.first_name[0] }}{{ user.last_name[0] }}</span><div style="min-width:0"><b>{{ user.first_name }} {{ user.last_name }}</b><small>{{ role }}{% if user.facility %} · {{ user.facility.name }}{% endif %}</small></div></div>
    <form method="post" action="{{ url_for('logout') }}">{{ m.csrf_field() }}<button class="btn ghost sm block" type="submit">Sign out</button></form>
   </div>
- </aside>
- <div class="main" id="main" tabindex="-1">
-  <div class="top"><span class="crumb">{% block crumb %}{{ role }}{% endblock %}</span><span class="grow"></span>
-   <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark theme">{{ m.icon('moon') }}</button>
-   <a class="icon-btn" href="{{ url_for('notifications') }}" aria-label="Notifications{% if user.unread %}, {{ user.unread }} unread{% endif %}">{{ m.icon('bell') }}{% if user.unread %}<span class="dot">{{ user.unread }}</span>{% endif %}</a>
   </div>
-  <div class="page">{% block content %}{% endblock %}</div>
+ </aside>
+ <div class="main">
+  <header class="top"><span class="crumb">{% block crumb %}{{ role }}{% endblock %}</span><span class="grow"></span>
+   <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark theme">{{ m.icon('moon') }}</button>
+   <a class="icon-btn" href="{{ url_for('notifications') }}" aria-label="Notifications{% if user.unread %}, {{ user.unread }} unread{% endif %}">{{ m.icon('bell') }}{% if user.unread %}<span class="dot" aria-hidden="true">{{ user.unread }}</span>{% endif %}</a>
+  </header>
+  <main class="page" id="main" tabindex="-1">{% block content %}{% endblock %}</main>
  </div>
 </div>
 {% endblock %}
-<div class="toasts" aria-live="polite">
+<div class="toasts" aria-live="polite" aria-atomic="false">
 {% for cat, msg in get_flashed_messages(with_categories=true) %}<div class="toast {{ cat }}" role="{{ 'alert' if cat == 'err' else 'status' }}"><div>{{ msg }}</div><button type="button" aria-label="Dismiss">&times;</button></div>{% endfor %}
 </div>
-<dialog id="confirm" aria-labelledby="confirm-title"><div class="sheet"><h2 id="confirm-title">Please confirm</h2><p id="confirm-text" class="muted"></p>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="sheet"><h2 id="confirm-title">Please confirm</h2><p id="confirm-text" class="muted"></p>
  <div class="actions" style="justify-content:flex-end"><button class="btn ghost" id="confirm-no" type="button">Keep as is</button><button class="btn red" id="confirm-go" type="button">Confirm</button></div></div></dialog>
 <script src="{{ url_for('static', filename='app.js', v=config.ASSET_V) }}" defer></script>
 </body></html>

@@ -1,4 +1,4 @@
 {% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}{{ code }}{% endblock %}
 {% block shell %}<div class="public"><section class="art dark-surface"><div style="position:relative;z-index:1">{{ m.logo('2.8rem') }}</div><span class="drop a"></span></section>
-<section class="panel" id="main"><div class="card" style="display:grid;gap:12px"><span class="mono muted">Error {{ code }}</span><h2>{{ title }}</h2><p class="muted">{{ text }}</p>
-<a class="btn red" href="{{ url_for('landing') }}">Back to Vytal</a></div></section></div>{% endblock %}
+<main class="panel" id="main" tabindex="-1"><div class="card" style="display:grid;gap:12px"><span class="mono muted">Error {{ code }}</span><h1 class="h2">{{ title }}</h1><p class="muted">{{ text }}</p>
+<a class="btn red" href="{{ url_for('landing') }}">Back to Vytal</a></div></main></div>{% endblock %}

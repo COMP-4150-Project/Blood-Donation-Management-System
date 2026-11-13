@@ -3,8 +3,8 @@
 <form method="post" action="{{ url_for('login') }}" style="display:grid;gap:16px" novalidate>
  {{ m.csrf_field() }}<input type="hidden" name="next" value="{{ next }}">
  <div><h2>Sign in</h2><p class="muted" style="margin-top:6px">Your account type decides what you see.</p></div>
- {{ m.field('email','Email','email', ph='you@example.com', attrs='autocomplete="username" autofocus') }}
- {{ m.field('password','Password','password', attrs='autocomplete="current-password"') }}
+ {{ m.field('email','Email','email', ph='you@example.com', attrs='autocomplete="username" maxlength="254" autofocus') }}
+ {{ m.field('password','Password','password', attrs='autocomplete="current-password" maxlength="128"') }}
  <button class="btn red block" type="submit">Sign in</button>
  <p class="muted" style="text-align:center">New donor? <a href="{{ url_for('register') }}">Create an account</a></p>
  <details>

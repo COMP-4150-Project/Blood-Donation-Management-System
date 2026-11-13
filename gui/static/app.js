@@ -28,15 +28,28 @@
   $$('time[datetime]').forEach(t => {
     const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(t.dateTime); const [yy, mm, dd] = dateOnly ? t.dateTime.split('-').map(Number) : [];
     const d = dateOnly ? new Date(yy, mm - 1, dd) : new Date(t.dateTime); if (isNaN(d)) return;
-    const o = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+    const o = { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' };
     if (t.dataset.rel) { const m = Math.round((d - Date.now()) / 60000), a = Math.abs(m); t.title = d.toLocaleString([], o);
-      t.textContent = a < 60 ? `${m < 0 ? '' : 'in '}${a} min${m < 0 ? ' ago' : ''}` : a < 2880 ? `${m < 0 ? '' : 'in '}${Math.round(a / 60)} h${m < 0 ? ' ago' : ''}` : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      t.textContent = a < 1 ? 'just now' : a < 60 ? `${m < 0 ? '' : 'in '}${a} min${m < 0 ? ' ago' : ''}` : a < 2880 ? `${m < 0 ? '' : 'in '}${Math.round(a / 60)} h${m < 0 ? ' ago' : ''}` : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
     } else t.textContent = d.toLocaleString([], t.dataset.date ? { month: 'short', day: 'numeric', year: 'numeric' } : o);
   });
 
   // sticky header shadow
   const top = $('.top'); if (top) addEventListener('scroll', () => top.classList.toggle('scrolled', scrollY > 6), { passive: true });
-  const side = $('.side'); if (side && innerWidth <= 1000) document.documentElement.style.setProperty('--sideh', side.offsetHeight + 'px');
+  // phone and tablet menu: toggle button, height of the sticky bar recomputed on resize and rotation
+  const side = $('.side'), mb = $('#menu'), narrow = matchMedia('(max-width:1000px)');
+  const setH = () => document.documentElement.style.setProperty('--sideh', side && narrow.matches && getComputedStyle(side).position === 'sticky' ? $('.side-bar', side).offsetHeight + 17 + 'px' : '0px');
+  const setMenu = open => { if (!side || !mb) return; side.classList.toggle('open', open); mb.setAttribute('aria-expanded', String(open)); };
+  if (side) {
+    setH(); addEventListener('resize', setH); addEventListener('orientationchange', () => setTimeout(setH, 200));
+    if (window.ResizeObserver) new ResizeObserver(setH).observe(side);
+    narrow.addEventListener ? narrow.addEventListener('change', () => { setMenu(false); setH(); }) : 0;
+    if (mb) {
+      mb.addEventListener('click', () => setMenu(mb.getAttribute('aria-expanded') !== 'true'));
+      addEventListener('keydown', e => { if (e.key === 'Escape' && side.classList.contains('open')) { setMenu(false); mb.focus(); } });
+      document.addEventListener('click', e => { if (side.classList.contains('open') && !side.contains(e.target)) setMenu(false); });
+    }
+  }
 
   // soft page transitions
   addEventListener('pageshow', () => document.body.classList.remove('leaving'));
@@ -49,13 +62,13 @@
   // toasts
   const box = $('.toasts');
   const closeToast = t => { t.classList.add('out'); setTimeout(() => t.remove(), 330); };
-  $$('.toast').forEach((t, i) => { const ttl = t.classList.contains('err') ? 9000 : 6000; t.style.setProperty('--ttl', ttl + 'ms'); t.style.animationDelay = i * 120 + 'ms';
-    t.querySelector('button').onclick = () => closeToast(t); setTimeout(() => closeToast(t), ttl + i * 120); });
+  $$('.toast').forEach((t, i) => { const err = t.classList.contains('err'); t.style.setProperty('--ttl', '6000ms'); t.style.animationDelay = i * 120 + 'ms';
+    t.querySelector('button').onclick = () => closeToast(t); if (!err) setTimeout(() => closeToast(t), 6000 + i * 120); });
   window.toast = (msg, kind = 'info') => { const t = document.createElement('div'); t.className = 'toast ' + kind; t.setAttribute('role', kind === 'err' ? 'alert' : 'status');
-    t.innerHTML = '<div></div><button aria-label="Dismiss">&times;</button>'; t.firstChild.textContent = msg; t.querySelector('button').onclick = () => closeToast(t); box.append(t); setTimeout(() => closeToast(t), 5000); };
+    t.innerHTML = '<div></div><button type="button" aria-label="Dismiss">&times;</button>'; t.firstChild.textContent = msg; t.querySelector('button').onclick = () => closeToast(t); box.append(t); if (kind !== 'err') setTimeout(() => closeToast(t), 5000); };
 
   // confirmation dialog for destructive actions (US-07)
-  const dlg = $('#confirm');
+  const dlg = $('#confirm-dialog');
   if (dlg) {
     let pending = null;
     document.addEventListener('submit', e => {
@@ -79,7 +92,8 @@
   // live table filter
   $$('[data-filter]').forEach(inp => {
     const rows = $$(inp.dataset.filter + ' tbody tr');
-    inp.addEventListener('input', () => { const q = inp.value.toLowerCase(); rows.forEach(r => r.hidden = q && !r.textContent.toLowerCase().includes(q)); });
+    const none = $(inp.dataset.empty || '#none-' + inp.id);
+    inp.addEventListener('input', () => { const q = inp.value.toLowerCase(); let n = 0; rows.forEach(r => { r.hidden = !!q && !r.textContent.toLowerCase().includes(q); if (!r.hidden) n++; }); if (none) none.hidden = n > 0; });
   });
   // select all
   $$('[data-all]').forEach(master => master.addEventListener('change', () => $$(master.dataset.all).forEach(c => c.checked = master.checked)));
@@ -99,6 +113,7 @@
     const fill = () => { if (by.dataset.touched) return; by.value = local(new Date(Date.now() + lead[urg.value] * 60000)); sync(); };
     const sync = () => { const d = new Date(by.value); hid.value = isNaN(d) ? '' : d.toISOString(); };
     by.addEventListener('input', () => { by.dataset.touched = '1'; sync(); }); urg.addEventListener('change', () => { delete by.dataset.touched; fill(); });
+    if (!by.value && by.dataset.iso) { const d = new Date(by.dataset.iso); if (!isNaN(d)) { by.value = local(d); by.dataset.touched = '1'; } }
     if (!by.value) fill(); else sync();
     $$('[data-pick-urgency]').forEach(b => b.onclick = () => { urg.value = b.dataset.pickUrgency; delete by.dataset.touched; fill(); $$('[data-pick-urgency]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
   }
@@ -119,9 +134,17 @@
   $$('[data-demo]').forEach(b => b.onclick = () => { $('#email').value = b.dataset.demo; $('#password').value = 'Vytal-demo-2026'; $('#password').focus(); });
 })();
 
-// tabs (component switchers)
-document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => {
-  const card = b.closest('.card');
-  card.querySelectorAll('[data-tab]').forEach(x => x.setAttribute('aria-pressed', x === b));
-  card.querySelectorAll('[data-panel]').forEach(p => { const show = p.dataset.panel === b.dataset.tab; p.hidden = !show; if (show) { p.style.animation = 'none'; void p.offsetWidth; p.style.animation = 'rise .4s cubic-bezier(.22,.8,.24,1) both'; } });
-}));
+// tabs (component switchers): aria-selected, roving tabindex and arrow keys
+document.querySelectorAll('[role=tablist]').forEach(list => {
+  const tabs = [...list.querySelectorAll('[role=tab]')], card = list.closest('.card');
+  const pick = (b, focus) => {
+    tabs.forEach(x => { const on = x === b; x.setAttribute('aria-selected', String(on)); x.tabIndex = on ? 0 : -1; });
+    card.querySelectorAll('[data-panel]').forEach(p => { const show = p.dataset.panel === b.dataset.tab; p.hidden = !show; if (show) { p.style.animation = 'none'; void p.offsetWidth; p.style.animation = 'rise .4s cubic-bezier(.22,.8,.24,1) both'; } });
+    if (focus) b.focus();
+  };
+  tabs.forEach((b, i) => {
+    b.addEventListener('click', () => pick(b));
+    b.addEventListener('keydown', e => { const k = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      if (k) { e.preventDefault(); pick(tabs[(i + k + tabs.length) % tabs.length], true); } else if (e.key === 'Home') { e.preventDefault(); pick(tabs[0], true); } else if (e.key === 'End') { e.preventDefault(); pick(tabs[tabs.length - 1], true); } });
+  });
+});

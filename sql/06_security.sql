@@ -52,19 +52,20 @@ GRANT USAGE ON SCHEMA vytal TO vytal_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA vytal TO vytal_app;
 GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA vytal TO vytal_app;
 REVOKE EXECUTE ON PROCEDURE release_tested(int, int) FROM vytal_app;      -- internal step of separate_donation / record_tests
-GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int), donors_for_group(text, text) TO vytal_app;
+GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int), donors_for_group(text, text),
+                          donation_type_allows(text, text), estimated_blood_volume_ml(char, numeric, numeric) TO vytal_app;
 -- SE-07 minimum disclosure: no password hashes or lockout counters, contact details, screening answers, audit values or
 -- token hashes by SELECT. The screens that need them read them through these scoped functions (03_procedures.sql).
 REVOKE SELECT ON user_account FROM vytal_app;
 GRANT SELECT (user_id, first_name, last_name, role, is_active, created_by, created_at) ON user_account TO vytal_app;
 REVOKE SELECT ON donor FROM vytal_app;
-GRANT SELECT (user_id, donor_code, date_of_birth, sex, weight_kg, blood_group, verified_by, verified_at, is_flagged,
+GRANT SELECT (user_id, donor_code, date_of_birth, sex, weight_kg, height_cm, blood_group, verified_by, verified_at, is_flagged,
               next_eligible_date) ON donor TO vytal_app;
 REVOKE SELECT ON screening_answer FROM vytal_app;
 REVOKE SELECT ON audit_log FROM vytal_app;
 GRANT SELECT (audit_id, user_id, action, table_name, record_id, field_name, changed_at) ON audit_log TO vytal_app;
 GRANT EXECUTE ON FUNCTION login_lookup(text), my_profile(), screening_answers(int),
-                          audit_entries(int, text, text, timestamptz, timestamptz, int) TO vytal_app;
+                          audit_entries(int, text, text, timestamptz, timestamptz, int, int) TO vytal_app;
 REVOKE SELECT ON user_session FROM vytal_app;
 GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_app;
 
@@ -78,7 +79,8 @@ GRANT SELECT (user_id, first_name, last_name, role, is_active, created_at) ON us
 REVOKE SELECT ON audit_log FROM vytal_report;
 GRANT SELECT (audit_id, user_id, action, table_name, record_id, field_name, changed_at) ON audit_log TO vytal_report;
 -- the read-only calculations the views and key queries call (v_donor_eligibility, Q03); never a procedure
-GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int) TO vytal_report;
+GRANT EXECUTE ON FUNCTION donor_eligibility(int, date), eligible_donors(int),
+                          estimated_blood_volume_ml(char, numeric, numeric) TO vytal_report;
 REVOKE SELECT ON user_session FROM vytal_report;
 GRANT SELECT (session_id, user_id, created_at, last_seen_at, ended_at) ON user_session TO vytal_report;
 

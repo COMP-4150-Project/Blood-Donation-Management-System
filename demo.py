@@ -65,7 +65,7 @@ def main():
     say(f"Maya logs in as {role} (user {maya}).")
 
     def donor(email, group, first, sex="M"):
-        return svc.register_donor(email, PASSWORD, first, "Demo", "519-555-0100", dt.date(1990, 5, 1), sex, 75,
+        return svc.register_donor(email, PASSWORD, first, "Demo", "519-555-0100", dt.date(1990, 5, 1), sex, 75, 178 if sex == "M" else 168,
                                   "1 Main St", group)
 
     say("Earlier today: 3 O- donors and 1 A+ donor give whole blood, tests pass, units are released.")

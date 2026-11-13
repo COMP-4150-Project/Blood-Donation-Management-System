@@ -26,14 +26,46 @@ def one(con, sql, params=()):
 
 
 # ---------------------------------------------------------------- shared
+def _card(con, user_id):
+    card = one(con, "SELECT user_id, first_name, last_name, role FROM user_account WHERE user_id = %s AND is_active", (user_id,))
+    if not card:
+        raise AccessDenied("no such account")
+    card["unread"] = con.execute("SELECT count(*) FROM notification WHERE user_id = %s AND read_at IS NULL", (user_id,)).fetchone()[0]
+    card["facility"] = one(con, "SELECT f.facility_id, f.name FROM staff s JOIN facility f USING (facility_id) WHERE s.user_id = %s", (user_id,))
+    return card
+
+
 def user_card(user_id):
     with session(user_id) as con:
-        card = one(con, "SELECT user_id, first_name, last_name, role FROM user_account WHERE user_id = %s AND is_active", (user_id,))
-        if not card:
-            raise AccessDenied("no such account")
-        card["unread"] = con.execute("SELECT count(*) FROM notification WHERE user_id = %s AND read_at IS NULL", (user_id,)).fetchone()[0]
-        card["facility"] = one(con, "SELECT f.facility_id, f.name FROM staff s JOIN facility f USING (facility_id) WHERE s.user_id = %s", (user_id,))
-        return card
+        return _card(con, user_id)
+
+
+def session_card(token):
+    """One connection for the whole sign-in check of a request: resume the session (SE-06 idle window) and read the user card.
+    Returns None once the session has ended, timed out or its account was deactivated."""
+    with session() as con:
+        found, _role_name = con.execute("CALL resume_session(%s)", (svc._token_hash(token or ""),)).fetchone()
+        if found is None:
+            return None
+        con.execute("SELECT set_config('vytal.user_id', %s, true)", (str(found),))
+        return _card(con, found)
+
+
+def end_reason(user_id):
+    """Why a session ended, as far as the database can tell: 'deactivated', 'timeout' or 'ended' (password changed or reset, or
+    signed out elsewhere)."""
+    try:
+        with session(user_id) as con:
+            active = con.execute("SELECT is_active FROM user_account WHERE user_id = %s", (user_id,)).fetchone()
+            if active is not None and not active[0]:
+                return "deactivated"
+            last = con.execute("SELECT last_seen_at, ended_at FROM user_session WHERE user_id = %s ORDER BY session_id DESC LIMIT 1",
+                               (user_id,)).fetchone()
+    except Exception:
+        return "timeout"
+    if last and last[1] is not None and (last[1] - last[0]) < dt.timedelta(minutes=15):
+        return "ended"
+    return "timeout"
 
 
 def facilities(user_id, active_only=True):
@@ -47,27 +79,82 @@ def donor_dashboard(donor_id):
     home = svc.donor_home(donor_id)
     with session(donor_id) as con:
         d = one(con, "SELECT d.donor_code, d.blood_group, nullif(d.next_eligible_date, 'infinity') AS next_eligible_date, "
-                     "d.next_eligible_date = 'infinity' AS permanent, d.sex, d.weight_kg, d.verified_by IS NOT NULL AS verified "
-                     "FROM donor d WHERE d.user_id = %s", (donor_id,))
+                     "d.next_eligible_date = 'infinity' AS permanent, d.sex, d.weight_kg, d.height_cm, d.verified_by IS NOT NULL AS verified, "
+                     "estimated_blood_volume_ml(d.sex, d.height_cm, d.weight_kg) AS ebv_ml, r.min_blood_volume_ml, r.min_weight_kg "
+                     "FROM donor d JOIN eligibility_rule r USING (sex) WHERE d.user_id = %s", (donor_id,))
         interval = con.execute("SELECT i.interval_days FROM donation_interval i WHERE i.donation_type_code = 'WB' AND i.sex = %s",
                                (d["sex"],)).fetchone()[0]
         last = con.execute("SELECT max(donated_at) FROM donation WHERE donor_id = %s", (donor_id,)).fetchone()[0]
+        lt = con.execute("SELECT donation_type_code FROM donation WHERE donor_id = %s ORDER BY donated_at DESC LIMIT 1", (donor_id,)).fetchone()
         last_screen = con.execute("SELECT max(completed_at) FROM screening WHERE donor_id = %s", (donor_id,)).fetchone()[0]
         deferrals = rows(con, "SELECT r.description, f.start_date, f.end_date, r.is_permanent FROM deferral f "
                               "JOIN deferral_reason r USING (reason_code) WHERE f.donor_id = %s AND (f.end_date IS NULL OR f.end_date >= CURRENT_DATE) "
                               "ORDER BY f.start_date DESC", (donor_id,))
         lifetime = con.execute("SELECT count(*), coalesce(sum(volume_ml), 0) FROM donation WHERE donor_id = %s", (donor_id,)).fetchone()
         today = con.execute("SELECT CURRENT_DATE").fetchone()[0]
+        closed = {r[0] for r in con.execute("SELECT c.call_id FROM call_recipient cr JOIN donation_call c USING (call_id) JOIN v_request r USING (request_id) "
+                                            "WHERE cr.donor_id = %s AND r.status <> 'Open'", (donor_id,)).fetchall()}
     nxt = d["next_eligible_date"]
     permanent = bool(d["permanent"])
     days_left = None if (nxt is None or permanent) else max((nxt - today).days, 0)
-    ring = 100
-    if last and days_left is not None and days_left > 0 and interval:
+    banner = eligibility_banner(home["status"], d, permanent)
+    ring = 0
+    if banner["state"] == "eligible":
+        ring = 100
+    elif banner["state"] == "screen":
+        ring = 100                                  # nothing but a screening stands in the way
+    elif banner["state"] == "not_eligible" and last and days_left and interval:
         ring = max(0, min(100, round(100 * (interval - days_left) / interval)))
-    elif permanent:
-        ring = 0
-    return {**home, "info": d, "interval": interval, "last_donation": last, "last_screening": last_screen, "deferrals": deferrals,
+    return {**home, "elig_status": home["status"], "banner": banner, "closed_calls": closed, "last_donation_type": lt[0] if lt else None, "info": d, "interval": interval, "last_donation": last, "last_screening": last_screen, "deferrals": deferrals,
             "days_left": days_left, "permanent": permanent, "ring": ring, "donations": lifetime[0], "litres": round(lifetime[1] / 1000, 2)}
+
+
+def eligibility_banner(status, info, permanent):
+    """The one value the donor's top banner is built from (headline, pill, ring text and reason), derived from the database's
+    eligibility status alone, so they cannot disagree. Only the exact status 'Eligible' reads as eligible."""
+    s = (status or "").strip()
+    kg = f"{float(info['min_weight_kg']):g}"
+    litres = f"{info['min_blood_volume_ml'] / 1000:.1f}"
+    if s == "Eligible":
+        return {"state": "eligible", "kind": "eligible", "tone": "green", "label": "Eligible to donate", "headline": "You are eligible to donate",
+                "ring_value": "Now", "ring_text": "you can give", "reason": None}
+    if s == "Complete screening to confirm eligibility":
+        return {"state": "screen", "kind": "screen", "tone": "amber", "label": "Screening needed", "ring_value": "Next", "ring_text": "screening",
+                "headline": "Complete your health screening to confirm you can donate", "reason": None}
+    if s.startswith("Screening older than 24"):
+        return {"state": "screen", "kind": "screen", "tone": "amber", "label": "Screening needed", "ring_value": "Next", "ring_text": "screening",
+                "headline": "Repeat your health screening before you donate", "reason": None}
+    if s == "Account inactive":
+        return {"state": "inactive", "kind": "inactive", "tone": "red", "label": "Account not active", "ring_value": "\u2014", "ring_text": "inactive",
+                "headline": "Your account is not active", "reason": None}
+    base = {"state": "not_eligible", "tone": "red", "label": "Not eligible right now", "ring_value": "\u2014", "ring_text": "not yet",
+            "headline": "You are not eligible to donate right now"}
+    if permanent or s == "Permanently deferred":
+        return base | {"state": "permanent", "kind": "permanent", "label": "Not able to donate", "ring_text": "not eligible",
+                       "headline": "You are not eligible to donate",
+                       "reason": "You are permanently deferred and unable to donate. If you have questions, please speak to the clinic team or Canadian Blood Services."}
+    if "under" in s and " kg" in s:
+        return base | {"kind": "weight", "ring_text": "not eligible",
+                       "reason": f"Your weight is under the {kg} kg minimum. Update your weight in Profile if it has changed, or speak to the clinic team."}
+    if "blood volume" in s:
+        have = f"{info['ebv_ml'] / 1000:.1f}"
+        return base | {"kind": "volume", "ring_text": "not eligible",
+                       "reason": f"Your height and weight give an estimated blood volume of {have} L, under the {litres} L minimum for a safe donation. "
+                                 "Update your height or weight in Profile if they have changed, or speak to the clinic team."}
+    if "flagged" in s:
+        return base | {"kind": "flagged", "ring_text": "not eligible",
+                       "reason": "A test on an earlier donation needs follow-up. Please speak to the clinic team."}
+    if s.startswith("Not eligible until"):
+        return base | {"kind": "wait", "ring_text": "days to go",
+                       "reason": "A waiting period applies before your next donation."}
+    return base | {"kind": "other", "ring_text": "not eligible",
+                   "reason": "If you are not sure why, please speak to the clinic team. They can explain what happens next."}
+
+
+def donor_sex(user_id):
+    with session(user_id) as con:
+        r = con.execute("SELECT sex FROM donor WHERE user_id = %s", (user_id,)).fetchone()
+    return r[0] if r else None
 
 
 def screening_questions(user_id):
@@ -111,6 +198,12 @@ def requests_list(staff_id, status=None):
         return request_queue(con, fac, status or None)
 
 
+def requests_total(staff_id, status=None):
+    with session(staff_id) as con:
+        fac = _role(con, staff_id, "Staff")
+        return con.execute("SELECT count(*) FROM v_request WHERE facility_id = %s AND (%s::text IS NULL OR status = %s)", (fac, status or None, status or None)).fetchone()[0]
+
+
 def request_detail(staff_id, request_id):
     with session(staff_id) as con:
         fac = _role(con, staff_id, "Staff")
@@ -123,9 +216,19 @@ def request_detail(staff_id, request_id):
         calls = rows(con, "SELECT c.call_id, c.sent_at, count(r.donor_id) AS recipients, count(*) FILTER (WHERE r.response = 'Accepted') AS accepted, "
                           "count(*) FILTER (WHERE r.response = 'Declined') AS declined FROM donation_call c LEFT JOIN call_recipient r USING (call_id) "
                           "WHERE c.request_id = %s GROUP BY c.call_id ORDER BY c.sent_at DESC", (request_id,))
+        called = {r[0] for r in con.execute("SELECT o.donor_code FROM donation_call c JOIN call_recipient r USING (call_id) JOIN donor o ON o.user_id = r.donor_id "
+                                            "WHERE c.request_id = %s", (request_id,)).fetchall()}
     donors = svc.find_donors(staff_id, request_id) if req["status"] == "Open" else []
     responses = svc.call_responses(staff_id, request_id)
-    return {"req": req, "units": units, "calls": calls, "donors": donors, "responses": responses}
+    return {"req": req, "units": units, "calls": calls, "donors": donors, "responses": responses, "called": called}
+
+
+def called_codes(staff_id, request_id):
+    """Donor codes that already received a call for this request (FR-26: one call per donor and request)."""
+    with session(staff_id) as con:
+        svc._own_request(con, staff_id, request_id)
+        return {r[0] for r in con.execute("SELECT o.donor_code FROM donation_call c JOIN call_recipient r USING (call_id) JOIN donor o ON o.user_id = r.donor_id "
+                                          "WHERE c.request_id = %s", (request_id,)).fetchall()}
 
 
 def units_list(staff_id, status=None, component=None, group=None, limit=250):
@@ -138,6 +241,14 @@ def units_list(staff_id, status=None, component=None, group=None, limit=250):
                     (fac, status, status, component, component, group, group, limit))
 
 
+def units_total(staff_id, status=None, component=None, group=None):
+    with session(staff_id) as con:
+        fac = _role(con, staff_id, "Staff")
+        return con.execute("SELECT count(*) FROM v_blood_unit WHERE facility_id = %s AND (%s::text IS NULL OR status = %s) "
+                           "AND (%s::text IS NULL OR component_code = %s) AND (%s::text IS NULL OR blood_group = %s)",
+                           (fac, status, status, component, component, group, group)).fetchone()[0]
+
+
 def thresholds(staff_id):
     with session(staff_id) as con:
         fac = _role(con, staff_id, "Staff")
@@ -145,19 +256,35 @@ def thresholds(staff_id):
                               "ORDER BY component_code, blood_group", (fac,))
 
 
+def _like(q):
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+_DONORS_WHERE = ("WHERE (%s::text IS NULL OR donor_code ILIKE %s OR upper(blood_group) = upper(%s)) AND (%s::text IS NULL OR blood_group = %s) "
+                 "AND (NOT %s OR (can_be_called AND group_verified))")
+
+
 def donors_list(staff_id, q=None, group=None, ready=False):
+    """The quick filter matches a donor code or a blood group, so 'O-' and 'ab+' find the negative and positive groups too."""
+    q = (q or "").strip() or None
     with session(staff_id) as con:
         _role(con, staff_id, "Staff")
         return rows(con, "SELECT user_id, donor_code, blood_group, status, nullif(next_eligible_date, 'infinity') AS next_eligible_date, "
                          "next_eligible_date = 'infinity' AS permanent, group_verified, can_be_called FROM v_donor_eligibility "
-                         "WHERE (%s::text IS NULL OR donor_code ILIKE %s) AND (%s::text IS NULL OR blood_group = %s) AND (NOT %s OR (can_be_called AND group_verified)) "
-                         "ORDER BY donor_code LIMIT 150", (q or None, f"%{q}%", group or None, group or None, ready))
+                         + _DONORS_WHERE + " ORDER BY donor_code LIMIT 150", (q, _like(q or ""), q, group or None, group or None, ready))
+
+
+def donors_total(staff_id, q=None, group=None, ready=False):
+    q = (q or "").strip() or None
+    with session(staff_id) as con:
+        _role(con, staff_id, "Staff")
+        return con.execute("SELECT count(*) FROM v_donor_eligibility " + _DONORS_WHERE, (q, _like(q or ""), q, group or None, group or None, ready)).fetchone()[0]
 
 
 def donor_detail(staff_id, donor_id):
     with session(staff_id) as con:
         fac = _role(con, staff_id, "Staff")
-        d = one(con, "SELECT o.user_id, o.donor_code, o.date_of_birth, o.sex, o.weight_kg, o.blood_group, o.verified_at, o.is_flagged, "
+        d = one(con, "SELECT o.user_id, o.donor_code, o.date_of_birth, o.sex, o.weight_kg, o.height_cm, estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg) AS ebv_ml, o.blood_group, o.verified_at, o.is_flagged, "
                      "e.status, e.can_be_called, e.group_verified, nullif(e.next_eligible_date, 'infinity') AS next_eligible_date, "
                      "e.next_eligible_date = 'infinity' AS permanent, v.first_name, v.last_name "
                      "FROM donor o JOIN v_donor_eligibility e USING (user_id) JOIN user_account v ON v.user_id = o.user_id WHERE o.user_id = %s", (donor_id,))
@@ -219,13 +346,33 @@ def admin_dashboard(admin_id):
             "audit": svc.audit_log(admin_id, limit=8)}
 
 
+_USERS_FROM = ("FROM user_account u LEFT JOIN staff s USING (user_id) LEFT JOIN facility f USING (facility_id) LEFT JOIN donor d USING (user_id) "
+               "WHERE (%s::text IS NULL OR u.role = %s) AND (%s::text IS NULL OR (u.first_name || ' ' || u.last_name || ' ' || coalesce(d.donor_code, '')) ILIKE %s "
+               "OR u.user_id = %s)")
+
+
+def _user_args(con, role, q):
+    """An address in the search box (it has an @) is matched exactly through the sign-in lookup: the app login cannot read the
+    email column, so partial address search is not possible without a database change."""
+    q = (q or "").strip() or None
+    by_email = None
+    if q and "@" in q:
+        hit = con.execute("SELECT user_id FROM login_lookup(%s)", (q.lower(),)).fetchone()
+        by_email = hit[0] if hit else -1
+    return (role or None, role or None, q, _like(q or ""), by_email)
+
+
 def users_list(admin_id, role=None, q=None):
     with session(admin_id) as con:
         _role(con, admin_id, "Admin")
         return rows(con, "SELECT u.user_id, u.first_name, u.last_name, u.role, u.is_active, u.created_at, f.name AS facility, s.job_title, d.donor_code "
-                         "FROM user_account u LEFT JOIN staff s USING (user_id) LEFT JOIN facility f USING (facility_id) LEFT JOIN donor d USING (user_id) "
-                         "WHERE (%s::text IS NULL OR u.role = %s) AND (%s::text IS NULL OR (u.first_name || ' ' || u.last_name || ' ' || coalesce(d.donor_code, '')) ILIKE %s) "
-                         "ORDER BY u.role, u.last_name, u.first_name LIMIT 200", (role or None, role or None, q or None, f"%{q}%"))
+                         + _USERS_FROM + " ORDER BY u.role, u.last_name, u.first_name LIMIT 200", _user_args(con, role, q))
+
+
+def users_total(admin_id, role=None, q=None):
+    with session(admin_id) as con:
+        _role(con, admin_id, "Admin")
+        return con.execute("SELECT count(*) " + _USERS_FROM, _user_args(con, role, q)).fetchone()[0]
 
 
 def facilities_admin(admin_id):
@@ -247,7 +394,7 @@ def rules(admin_id):
                 "intervals": rows(con, "SELECT i.donation_type_code, t.name, i.sex, i.interval_days FROM donation_interval i "
                                        "JOIN donation_type t USING (donation_type_code) ORDER BY 1, 3"),
                 "reasons": rows(con, "SELECT reason_code, description, is_permanent, default_days FROM deferral_reason ORDER BY is_permanent, reason_code"),
-                "elig": rows(con, "SELECT sex, min_age_years, min_weight_kg, min_hemoglobin_gl FROM eligibility_rule ORDER BY sex")}
+                "elig": rows(con, "SELECT sex, min_age_years, min_weight_kg, min_hemoglobin_gl, min_blood_volume_ml FROM eligibility_rule ORDER BY sex")}
 
 
 def audit_tables(admin_id):

@@ -32,7 +32,7 @@ def test_app_role_still_produces_audit_rows_through_procedures(db):
     email = db.one("SELECT email FROM user_account WHERE user_id=%s", (d,))
     db.q("SET LOCAL ROLE vytal_app")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
-    db.q("CALL update_donor_profile(%s,'519-555-0100',%s,'2 Main St',81)", (d, email))
+    db.q("CALL update_donor_profile(%s,'519-555-0100',%s,'2 Main St',81,178)", (d, email))
     db.q("RESET ROLE")
     assert db.q("SELECT user_id FROM audit_log WHERE table_name='donor' AND field_name='weight_kg' AND record_id=%s",
                 (str(d),)) == [(d,)]
@@ -47,7 +47,8 @@ def test_report_role_is_read_only_and_cannot_see_password_hashes(db):
 
 APP_FUNCTIONS = {"donor_eligibility(integer,date)", "eligible_donors(integer)", "donors_for_group(text,text)",
                  "login_lookup(text)", "my_profile()", "screening_answers(integer)",
-                 "audit_entries(integer,text,text,timestamp with time zone,timestamp with time zone,integer)"}
+                 "audit_entries(integer,text,text,timestamp with time zone,timestamp with time zone,integer,integer)",
+                 "donation_type_allows(text,text)", "estimated_blood_volume_ml(character,numeric,numeric)"}
 INTERNAL_PROCEDURES = ["release_tested(integer,integer)"]
 
 
@@ -123,8 +124,8 @@ def test_only_the_called_donor_answers_a_call(db):
 def test_a_donor_cannot_be_inserted_already_verified(db):
     """FR-09: the app cannot insert donor rows at all; inside the procedures (owner role) only the acting staff can verify."""
     uid = db.user("Donor")
-    row = "INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg,blood_group,verified_by,verified_at) " \
-          "VALUES (%s,'D-9001','1990-01-01','F',60,'A+',%s,now())"
+    row = "INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg,height_cm,blood_group,verified_by,verified_at) " \
+          "VALUES (%s,'D-9001','1990-01-01','F',60,165,'A+',%s,now())"
     db.q("SET LOCAL ROLE vytal_app")
     assert "permission denied" in db.fails(row, (uid, db.nurse))
     db.q("SET LOCAL ROLE vytal_owner")                                  # what a SECURITY DEFINER procedure runs as

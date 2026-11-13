@@ -6,7 +6,7 @@
  <details {% if role != 'Donor' %}open{% endif %}>
   <summary>{{ role }} accounts ({{ demo_accounts|selectattr('role','equalto',role)|list|length }})</summary>
   <table>
-   <thead><tr><th>Username (email)</th><th>Password</th><th>Name</th>{% if role == 'Staff' %}<th>Facility</th>{% endif %}</tr></thead>
+   <thead><tr><th scope="col">Username (email)</th><th scope="col">Password</th><th scope="col">Name</th>{% if role == 'Staff' %}<th scope="col">Facility</th>{% endif %}</tr></thead>
    <tbody>
    {% for a in demo_accounts if a.role == role %}
     <tr {% if clickable %}data-demo="{{ a.email }}" tabindex="0"{% endif %}><td><code>{{ a.email }}</code></td><td><code>{{ demo_password }}</code></td><td>{{ a.name }}</td>{% if role == 'Staff' %}<td>{{ a.note }}</td>{% endif %}</tr>

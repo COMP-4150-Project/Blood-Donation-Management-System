@@ -48,7 +48,7 @@ def owner(world):
 
 
 def new_donor(email, group="O+", sex="M"):
-    return svc.register_donor(email, PASSWORD, "Ana", "Roy", "519-555-0100", dt.date(1990, 5, 1), sex, 72, "1 Main St", group)
+    return svc.register_donor(email, PASSWORD, "Ana", "Roy", "519-555-0100", dt.date(1990, 5, 1), sex, 72, 175, "1 Main St", group)
 
 
 def donate_and_release(staff, donor, group, components=("RBC", "PLASMA")):
@@ -168,7 +168,7 @@ def test_bad_input_is_refused_with_a_field_message(world):
     for kwargs, field in ((dict(email="not-an-email"), "email"), (dict(sex="X"), "sex"),
                           (dict(blood_group="C+"), "blood_group"), (dict(weight_kg=5), "weight_kg")):
         args = dict(email="ok@v.ca", password=PASSWORD, first="A", last="B", phone=None, dob=dt.date(1990, 1, 1),
-                    sex="F", weight_kg=60, address=None, blood_group=None) | kwargs
+                    sex="F", weight_kg=60, height_cm=165, address=None, blood_group=None) | kwargs
         with pytest.raises(svc.InvalidInput, match=field):
             svc.register_donor(**args)
 
@@ -257,14 +257,14 @@ def test_donor_completes_their_own_screening(world):
 
 def test_donor_updates_profile_with_field_validation(world):
     donor = new_donor("profile@v.ca")
-    svc.update_profile(donor, "519-555-0104", "Profile2@v.ca", "3 Main St", 80)
+    svc.update_profile(donor, "519-555-0104", "Profile2@v.ca", "3 Main St", 80, 180)
     assert svc.login("profile2@v.ca", PASSWORD) == (donor, "Donor")
     with pytest.raises(svc.InvalidInput, match="weight_kg"):
-        svc.update_profile(donor, None, "profile2@v.ca", None, 5)
+        svc.update_profile(donor, None, "profile2@v.ca", None, 5, 180)
     with pytest.raises(svc.InvalidInput, match="email"):
-        svc.update_profile(donor, None, "nope", None, 80)
+        svc.update_profile(donor, None, "nope", None, 80, 180)
     with pytest.raises(psycopg.Error, match="Donor access only"):
-        svc.update_profile(world["windsor"], None, "x@v.ca", None, 80)
+        svc.update_profile(world["windsor"], None, "x@v.ca", None, 80, 180)
 
 
 def test_admin_lookback_by_donor_code_or_unit(world):
@@ -407,7 +407,7 @@ def test_quarantine_waits_for_a_concurrent_allocation(world):
 def test_registration_refuses_a_donor_under_17(world):
     teen = dt.date.today().replace(year=dt.date.today().year - 15)
     with pytest.raises(svc.InvalidInput, match="date_of_birth: donors must be at least 17"):
-        svc.register_donor("teen@v.ca", PASSWORD, "Tia", "Lam", None, teen, "F", 55, "1 St", "O+")
+        svc.register_donor("teen@v.ca", PASSWORD, "Tia", "Lam", None, teen, "F", 55, 162, "1 St", "O+")
 
 
 def test_admin_rule_edits_audit_filter_and_csv(world, tmp_path):
@@ -416,7 +416,7 @@ def test_admin_rule_edits_audit_filter_and_csv(world, tmp_path):
     with pytest.raises(psycopg.Error, match="Admin access only"):
         svc.set_shelf_life(staff, "PLT", 7)
     with pytest.raises(svc.InvalidInput):
-        svc.set_eligibility_rule(admin, "M", 12, 50, 130)
+        svc.set_eligibility_rule(admin, "M", 12, 50, 130, 3000)
     rows = svc.audit_log(admin, table="deferral_reason", record_id="SURG")
     assert [(r[2], r[3]) for r in rows] == [(admin, "INSERT")] and "Surgery" in rows[0][8]
     assert svc.audit_log(admin, table="deferral_reason", since=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)) == []
@@ -530,3 +530,173 @@ def test_admin_clears_a_lookback_through_the_backend(world):
         svc.clear_lookback(s, d, "cleared")
     assert svc.clear_lookback(world["admin"], d, "malaria test negative") == len(units)
     assert svc.donor_home(d)["status"] != "Not eligible (flagged after a failed test)"
+
+
+# ---------------------------------------------------------------------- test-report fixes, through the backend
+def test_two_simultaneous_donation_recordings_give_one_donation(world):
+    """BR-02 / issue 2: the second recording waits for the donor row, then sees the first and is refused."""
+    w = world["windsor"]
+    donor = new_donor("twice@v.ca", "O+")
+    svc.verify_blood_group(w, donor, "O+")
+    svc.screen_donor(w, donor, CLEAN)
+    errors, done = [], []
+    with owner(world) as a, owner(world) as watch:
+        a.execute("SET search_path = vytal")
+        first = a.execute("CALL record_donation(%s,%s,'WB',450,145)", (donor, w)).fetchone()[0]     # not committed yet
+
+        def second():
+            try:
+                done.append(svc.record_donation(w, donor, "WB", 450, 145, ["RBC"]))
+            except Exception as e:                  # the expected refusal is checked below
+                errors.append(e)
+
+        t = threading.Thread(target=second)
+        t.start()
+        for _ in range(200):                        # the second call must be blocked on the donor's row lock
+            pid = watch.execute("SELECT pid FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%%record_donation%%'"
+                                ).fetchone()
+            watch.rollback()
+            if pid:
+                break
+            threading.Event().wait(0.05)
+        else:
+            pytest.fail("the second recording never waited for the donor's row")
+        a.commit()
+        t.join(10)
+    assert done == [] and len(errors) == 1 and "not eligible until" in str(errors[0])
+    with owner(world) as con:
+        assert con.execute("SELECT count(*) FROM vytal.donation WHERE donor_id=%s", (donor,)).fetchone()[0] == 1
+    assert first is not None
+
+
+def test_backend_refuses_blank_and_absurd_input(world):
+    a, w = world["admin"], world["windsor"]
+    with owner(world) as con:
+        fac = con.execute("SELECT facility_id FROM vytal.staff WHERE user_id=%s", (w,)).fetchone()[0]
+    with pytest.raises(svc.InvalidInput, match="name: the facility name is required"):
+        svc.save_facility(a, None, "   ", "Hospital", "1 St")
+    with pytest.raises(svc.InvalidInput, match="address: the facility address is required"):
+        svc.save_facility(a, None, "Blank Address Hospital", "Hospital", " ")
+    with pytest.raises(svc.InvalidInput, match="phone:"):
+        svc.save_facility(a, None, "Bad Phone Hospital", "Hospital", "1 St", "call me")
+    with pytest.raises(svc.InvalidInput, match="first_name: first name is required"):
+        svc.create_staff(a, "blank@v.ca", PASSWORD, "  ", "T", fac)
+    with pytest.raises(svc.InvalidInput, match="patient_ref: the patient reference is required"):
+        svc.submit_request(w, "  ", "O+", "RBC", 1, "Routine", SOON)
+    with pytest.raises(svc.InvalidInput, match="units:"):
+        svc.submit_request(w, "P-9", "O+", "RBC", 51, "Routine", SOON)
+    donor = new_donor("hb@v.ca")
+    svc.verify_blood_group(w, donor, "O+")
+    svc.screen_donor(w, donor, CLEAN)
+    for bad in (float("nan"), float("inf"), -4, 0, 900, "abc", None):
+        with pytest.raises(svc.InvalidInput, match="hemoglobin_gl"):
+            svc.record_donation(w, donor, "WB", 450, bad, ["RBC"])
+    with pytest.raises(svc.InvalidInput, match="volume_ml"):
+        svc.record_donation(w, donor, "WB", 5000, 145, ["RBC"])
+    with pytest.raises(svc.InvalidInput, match="shelf_life_days"):
+        svc.set_shelf_life(a, "RBC", 100000)
+    with pytest.raises(svc.InvalidInput, match="interval_days"):
+        svc.set_donation_interval(a, "WB", "M", 5000)
+    with pytest.raises(svc.InvalidInput, match="min_units"):
+        svc.set_threshold(w, fac, "O+", "RBC", 100000)
+    with owner(world) as con:
+        assert con.execute("SELECT count(*) FROM vytal.donation WHERE donor_id=%s", (donor,)).fetchone()[0] == 0
+
+
+def test_backend_maps_database_errors_to_plain_messages(world):
+    d = new_donor("map@v.ca")
+    with pytest.raises(svc.InvalidInput, match="outside the allowed range"):
+        svc._call(d, "CALL update_donor_profile(%s,%s,%s,%s,'NaN'::numeric,170)", d, None, "map@v.ca", "1 St")
+    with pytest.raises(svc.InvalidInput, match="email: that email is already registered"):
+        new_donor("map@v.ca")
+    with pytest.raises(svc.InvalidInput, match="too long"):
+        svc.create_admin(world["admin"], "long@v.ca", PASSWORD, "x" * 80, "T")
+
+
+def test_an_admin_cannot_deactivate_themselves_and_unknown_account_types_are_refused(world):
+    a = world["admin"]
+    with pytest.raises(svc.InvalidInput, match="own account"):
+        svc.set_account_active(a, a, False)
+    with owner(world) as con:
+        assert con.execute("SELECT is_active FROM vytal.user_account WHERE user_id=%s", (a,)).fetchone() == (True,)
+    with pytest.raises(psycopg.Error, match="own account"):
+        svc._call(a, "CALL set_account_active(%s,%s,FALSE)", a, a)              # the procedure refuses it too
+    with pytest.raises(svc.InvalidInput, match="account_type"):
+        svc.create_account(a, "Janitor", "jan@v.ca", PASSWORD, "J", "K")
+    with pytest.raises(svc.InvalidInput, match="account_type"):
+        svc.create_account(a, "", "jan@v.ca", PASSWORD, "J", "K")
+    with owner(world) as con:
+        assert con.execute("SELECT count(*) FROM vytal.user_account WHERE email='jan@v.ca'").fetchone()[0] == 0
+    uid = svc.create_account(a, "Admin", "second.admin@v.ca", PASSWORD, "Sam", "Lee")
+    assert svc.set_account_active(a, uid, False) is None
+    assert svc.set_account_active(a, uid, True) is None
+
+
+def test_issuing_nothing_is_refused_through_the_backend(world):
+    w = world["windsor"]
+    donate_and_release(w, new_donor("noissue@v.ca", "B-"), "B-", ("RBC",))
+    rid = svc.submit_request(w, "N-1", "B-", "RBC", 1, "Routine", SOON)["request_id"]
+    with pytest.raises(svc.InvalidInput, match="at least one reserved unit"):
+        svc.close_request(w, rid, issued_units=[])
+    with owner(world) as con:
+        assert con.execute("SELECT status FROM vytal.blood_request WHERE request_id=%s", (rid,)).fetchone() == ("Open",)
+    assert svc.close_request(w, rid) == "Fulfilled"
+
+
+def test_plasma_donations_offer_and_accept_only_valid_components(world):
+    assert svc.components_for_donation_type("WB") == ["RBC", "PLASMA", "PLT"]
+    assert svc.components_for_donation_type("PLS") == ["PLASMA"]
+    assert svc.components_for_donation_type("PLT") == ["PLASMA", "PLT"]
+    w = world["windsor"]
+    donor = new_donor("plsma@v.ca", "A-")
+    svc.verify_blood_group(w, donor, "A-")
+    svc.screen_donor(w, donor, CLEAN)
+    with pytest.raises(Exception, match="cannot yield red blood cells"):
+        svc.record_donation(w, donor, "PLS", 600, 145, ["RBC"])
+    with owner(world) as con:
+        assert con.execute("SELECT count(*) FROM vytal.donation WHERE donor_id=%s", (donor,)).fetchone()[0] == 0
+    dn, units = svc.record_donation(w, donor, "PLS", 600, 145, ["PLASMA"])
+    assert len(units) == 1
+
+
+def test_staff_of_a_deactivated_facility_cannot_sign_in_or_work(world):
+    a = world["admin"]
+    fac = svc.save_facility(a, None, "Closing Clinic", "Blood Bank", "9 Dead End", "519-555-0777")
+    s = svc.create_staff(a, "closing@v.ca", PASSWORD, "Cy", "Lo", fac, "Nurse")
+    token, uid, _ = svc.sign_in("closing@v.ca", PASSWORD)
+    svc.set_facility_active(a, fac, False)
+    with pytest.raises(svc.AccessDenied, match="facility is deactivated"):
+        svc.login("closing@v.ca", PASSWORD)
+    with pytest.raises(svc.AccessDenied, match="session expired"):
+        svc.session_user(token)
+    with pytest.raises(psycopg.Error, match="facility is deactivated"):
+        svc.submit_request(s, "Z-1", "O+", "RBC", 1, "Routine", SOON)
+    svc.set_facility_active(a, fac, True)
+    assert svc.login("closing@v.ca", PASSWORD) == (s, "Staff")
+
+
+def test_audit_log_is_newest_first_pages_and_includes_the_last_day(world):
+    a = world["admin"]
+    d = new_donor("audit1@v.ca")
+    svc.admin_reset_password(a, d, "first-reset-pass-1")
+    svc.admin_reset_password(a, d, "second-reset-pass-2")
+    rows = svc.audit_log(a, table="user_account", limit=500)
+    ids = [r[0] for r in rows]
+    assert ids == sorted(ids, reverse=True)
+    resets = [r for r in rows if r[6] == "password" and r[5] == str(d)]
+    assert len(resets) == 2 and resets[0][2] == a
+    assert resets[0][9] and resets[0][10] == "admin@v.ca" and "reset-pass" not in " ".join(str(x) for x in resets[0])
+    total = rows[0][11]
+    assert total >= len(rows)
+    page1 = svc.audit_log(a, table="user_account", limit=2, offset=0)
+    page2 = svc.audit_log(a, table="user_account", limit=2, offset=2)
+    assert [r[0] for r in page1 + page2] == ids[:4]
+    today = dt.date.today()
+    assert svc.audit_log(a, since=today, until=today)                                   # a plain date covers that whole day
+    midnight = dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc)
+    assert svc.audit_log(a, until=midnight)                                             # as does what a date field sends
+    assert svc.audit_log(a, until=dt.date(2000, 1, 1)) == []
+    csv_text = svc.audit_csv(a, table="user_account", until=today)
+    assert csv_text.splitlines()[0].endswith("user_name,user_email")
+    with pytest.raises(svc.InvalidInput):
+        svc.audit_log(a, limit=-1)

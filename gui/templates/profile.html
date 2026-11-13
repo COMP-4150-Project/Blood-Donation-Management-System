@@ -3,24 +3,25 @@
 <div class="page-head"><div><h1>{{ p.first_name }} {{ p.last_name }}</h1><p>{{ p.role }} account</p></div></div>
 <div class="grid g2">
  <form class="card" method="post" action="{{ url_for('profile') }}" style="display:grid;gap:14px" novalidate>
-  {{ m.csrf_field() }}<header><h3>{{ 'Contact details' if p.role == 'Donor' else 'Your details' }}</h3></header>
+  {{ m.csrf_field() }}<header><h2 class="h3">{{ 'Contact details' if p.role == 'Donor' else 'Your details' }}</h2></header>
   {% if p.role == 'Donor' %}
-   <div class="form-grid">{{ m.field('email','Email','email', value=p.email) }}{{ m.field('phone','Phone','tel', value=p.phone, required=false) }}
-   <div class="full">{{ m.field('address','Address', value=p.address) }}</div>
+   <div class="form-grid">{{ m.field('email','Email','email', value=p.email, attrs='maxlength="254" autocomplete="email"') }}{{ m.field('phone','Phone','tel', value=p.phone, required=false, attrs='maxlength="30" autocomplete="tel"') }}
+   <div class="full">{{ m.field('address','Address', value=p.address, attrs='maxlength="200" autocomplete="street-address"') }}</div>
    {{ m.field('weight_kg','Weight (kg)','number', value=p.weight_kg, attrs='min="20" max="300" step="0.1"') }}
-   <div class="field"><label>Date of birth</label><input value="{{ p.date_of_birth.strftime('%b %d, %Y') }}" disabled></div></div>
+   {{ m.field('height_cm','Height (cm)','number', value=p.height_cm, hint='Height and weight give your estimated blood volume.', attrs='min="100" max="250" step="0.1"') }}
+   <div class="field"><label for="dob">Date of birth</label><input id="dob" value="{{ p.date_of_birth.strftime('%b %-d, %Y') }}" disabled></div></div>
    <button class="btn red" type="submit">Save changes</button>
   {% else %}
-   <dl style="display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:0"><dt class="muted">Email</dt><dd style="margin:0">{{ p.email }}</dd><dt class="muted">Phone</dt><dd style="margin:0">{{ p.phone or '—' }}</dd>
+   <dl style="display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 18px;margin:0;overflow-wrap:anywhere"><dt class="muted">Email</dt><dd style="margin:0">{{ p.email }}</dd><dt class="muted">Phone</dt><dd style="margin:0">{{ p.phone or '—' }}</dd>
    {% if user.facility %}<dt class="muted">Facility</dt><dd style="margin:0">{{ user.facility.name }}</dd>{% endif %}</dl>
    <p class="muted">Staff and admin contact details are changed by an administrator.</p>
   {% endif %}
  </form>
  <form class="card" method="post" action="{{ url_for('password') }}" style="display:grid;gap:14px" novalidate>
-  {{ m.csrf_field() }}<header><h3>Change password</h3></header>
-  {{ m.field('old_password','Current password','password', attrs='autocomplete="current-password"') }}
-  {{ m.field('new_password','New password','password', hint='At least 10 characters.', attrs='autocomplete="new-password"') }}
-  {{ m.field('confirm','Repeat new password','password', attrs='autocomplete="new-password"') }}
+  {{ m.csrf_field() }}<header><h2 class="h3">Change password</h2></header>
+  {{ m.field('old_password','Current password','password', attrs='autocomplete="current-password" maxlength="128"') }}
+  {{ m.field('new_password','New password','password', hint='At least 10 characters.', attrs='autocomplete="new-password" minlength="10" maxlength="128"') }}
+  {{ m.field('confirm','Repeat new password','password', attrs='autocomplete="new-password" maxlength="128"') }}
   <button class="btn teal" type="submit">Change password</button>
   <p class="muted">You will be signed out everywhere and asked to sign in again.</p>
  </form>

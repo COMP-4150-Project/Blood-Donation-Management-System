@@ -77,13 +77,30 @@ def test_expired_or_closed_cannot_be_allocated(db):
 
 # ---------------------------------------------------------------------- close_request() FR-28
 def test_unit_that_expired_while_reserved_is_never_issued(db):
-    unit = db.stock("O+")[0]
-    r = db.request("O+")
+    unit, other = db.stock("O+", n=2)
+    r = db.request("O+", n=2)
     db.q("CALL allocate(%s)", (r,))
     db.q("UPDATE blood_unit SET expires_at = now() - interval '1 minute' WHERE unit_id=%s", (unit,))
     assert db.one("CALL close_request(%s)", (r,)) == "Partially Fulfilled"
     assert db.one("SELECT status FROM blood_unit WHERE unit_id=%s", (unit,)) == "Expired"
+    assert db.one("SELECT status FROM blood_unit WHERE unit_id=%s", (other,)) == "Issued"
     assert db.one("SELECT cause FROM wastage_record WHERE unit_id=%s", (unit,)) == "Expired"
+
+
+def test_a_request_is_never_closed_with_zero_units_issued(db):
+    """An empty selection, or only expired reservations, is refused and the request stays open (it can still be cancelled)."""
+    unit = db.stock("O+")[0]
+    r = db.request("O+")
+    db.q("CALL allocate(%s)", (r,))
+    assert "select at least one" in db.fails("CALL close_request(%s, FALSE, ARRAY[]::text[])", (r,))
+    assert db.one("SELECT status FROM blood_request WHERE request_id=%s", (r,)) == "Open"
+    assert db.one("SELECT status FROM blood_unit WHERE unit_id=%s", (unit,)) == "Reserved"
+    db.q("UPDATE blood_unit SET expires_at = now() - interval '1 minute' WHERE unit_id=%s", (unit,))
+    assert "no unexpired reserved units" in db.fails("CALL close_request(%s)", (r,))
+    assert db.one("SELECT status FROM blood_request WHERE request_id=%s", (r,)) == "Open"
+    empty = db.request("AB-")                                   # nothing reserved at all
+    assert "no unexpired reserved units" in db.fails("CALL close_request(%s)", (empty,))
+    assert db.one("CALL close_request(%s, TRUE)", (empty,)) == "Cancelled"
 
 
 def test_close_issues_or_releases(db):
@@ -171,7 +188,7 @@ def test_register_donor_is_unverified_with_generated_code(db):
     d = db.donor("AB-", verified=False)
     code, group, verified = db.q("SELECT donor_code, blood_group, verified_by FROM donor WHERE user_id=%s", (d,))[0]
     assert re.fullmatch(r"D-\d{4,}", code) and (group, verified) == ("AB-", None)
-    assert "unique" in db.fails("CALL register_donor('NURSE@v.ca','x','A','B',NULL,'1990-01-01','F',60,NULL,NULL)")
+    assert "unique" in db.fails("CALL register_donor('NURSE@v.ca','x','A','B',NULL,'1990-01-01','F',60,165,NULL,NULL)")
 
 
 def test_create_staff_needs_an_active_facility(db):
@@ -240,7 +257,7 @@ def test_eligibility_status_labels(db, setup, expected):
 
 def test_under_the_minimum_age_shows_the_birthday(db):
     """A 17-year-old who registered before an Admin raised the minimum to 18 sees the date they become eligible."""
-    d = db.one("CALL register_donor('kid@v.ca','x','A','B',NULL,(CURRENT_DATE - interval '17 years')::date,'F',60,NULL,'O+')")
+    d = db.one("CALL register_donor('kid@v.ca','x','A','B',NULL,(CURRENT_DATE - interval '17 years')::date,'F',60,165,NULL,'O+')")
     db.q("UPDATE eligibility_rule SET min_age_years = 18")
     assert db.one("SELECT status FROM v_donor_eligibility WHERE user_id=%s", (d,)) == \
         "Not eligible until " + str(db.one("SELECT (CURRENT_DATE + interval '1 year')::date"))
@@ -249,7 +266,7 @@ def test_under_the_minimum_age_shows_the_birthday(db):
 @pytest.mark.parametrize("years, refused", [(15, True), (16, True), (17, False)])
 def test_registration_refuses_donors_under_the_minimum_age(db, years, refused):
     """UC-01 2b / BR-01: the minimum age comes from eligibility_rule; exactly 17 today is accepted."""
-    sql = ("CALL register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,'M',70,NULL,'O+')")
+    sql = ("CALL register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,'M',70,178,NULL,'O+')")
     msg = db.fails(sql, (f"age{years}@v.ca", years))
     assert ("at least 17 years old" in msg) if refused else msg == ""
 
@@ -362,7 +379,7 @@ def test_permanent_deferral_and_interval_reasons(db):
     gave = db.donor(screened=True)
     db.donate(gave)
     assert eligibility(db, gave)[2] == "Minimum interval since the last donation"
-    kid = db.one("CALL register_donor('kid2@v.ca','x','A','B',NULL,(CURRENT_DATE - interval '17 years')::date,'F',60,NULL,'O+')")
+    kid = db.one("CALL register_donor('kid2@v.ca','x','A','B',NULL,(CURRENT_DATE - interval '17 years')::date,'F',60,165,NULL,'O+')")
     db.q("UPDATE eligibility_rule SET min_age_years = 18")          # an Admin raises the minimum (MA-01)
     assert eligibility(db, kid)[2] == "Donors must be at least 18"
 
@@ -516,7 +533,7 @@ def test_staff_set_their_own_thresholds_and_stock_is_rechecked(db):
 def test_threshold_refusals(db):
     assert "own facility" in db.fails("CALL set_threshold(%s,%s,'O-','RBC',1)", (db.nurse, db.fac_b))
     assert "staff or admin access only" in db.fails("CALL set_threshold(%s,%s,'O-','RBC',1)", (db.donor(), db.fac_h))
-    assert "check" in db.fails("CALL set_threshold(%s,%s,'O-','RBC',-1)", (db.nurse, db.fac_h))
+    assert "between 0 and 1000" in db.fails("CALL set_threshold(%s,%s,'O-','RBC',-1)", (db.nurse, db.fac_h))
 
 
 # ---------------------------------------------------------------------- accounts and facilities UC-23
@@ -562,12 +579,12 @@ def test_save_facility_creates_and_edits(db):
 def test_donor_updates_their_profile_and_it_is_audited(db):
     d = db.donor(kg=70)
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
-    db.q("CALL update_donor_profile(%s,'519-555-0101','New@Mail.ca','2 Main St',48)", (d,))
+    db.q("CALL update_donor_profile(%s,'519-555-0101','New@Mail.ca','2 Main St',48,170)", (d,))
     assert db.q("SELECT a.phone, a.email, o.address FROM user_account a JOIN donor o USING (user_id) WHERE user_id=%s", (d,)) == \
         [("519-555-0101", "new@mail.ca", "2 Main St")]
     assert db.one("SELECT status FROM v_donor_eligibility WHERE user_id=%s", (d,)) == "Not eligible (under 50 kg)"
     assert {f for (f,) in db.q("SELECT field_name FROM audit_log WHERE user_id=%s", (d,))} >= {"phone", "email", "address", "weight_kg"}
-    assert "donor access only" in db.fails("CALL update_donor_profile(%s,NULL,'n@v.ca',NULL,70)", (db.nurse,))
+    assert "donor access only" in db.fails("CALL update_donor_profile(%s,NULL,'n@v.ca',NULL,70,178)", (db.nurse,))
 
 
 # ---------------------------------------------------------------------- UC-04 precondition / UC-20 responses
@@ -624,7 +641,7 @@ def test_admin_edits_every_kind_of_clinical_rule_and_each_change_is_audited(db):
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
     db.q("CALL set_shelf_life(%s,'PLT',7)", (db.admin,))
     db.q("CALL set_donation_interval(%s,'WB','M',60)", (db.admin,))
-    db.q("CALL set_eligibility_rule(%s,'M',18,55,135)", (db.admin,))
+    db.q("CALL set_eligibility_rule(%s,'M',18,55,135,3000)", (db.admin,))
     db.q("CALL save_deferral_reason(%s,'surg','Surgery in the last 6 months',FALSE,180)", (db.admin,))
     db.q("CALL save_deferral_reason(%s,'SURG','Major surgery in the last 6 months',FALSE,120)", (db.admin,))
     db.q("CALL set_compatibility(%s,'RBC','AB+','O+',FALSE)", (db.admin,))
@@ -641,7 +658,7 @@ def test_admin_edits_every_kind_of_clinical_rule_and_each_change_is_audited(db):
 
 @pytest.mark.parametrize("sql", [
     "CALL set_shelf_life(%s,'PLT',7)", "CALL set_donation_interval(%s,'WB','M',60)",
-    "CALL set_eligibility_rule(%s,'M',18,55,135)", "CALL save_deferral_reason(%s,'SURG','Surgery',FALSE,180)",
+    "CALL set_eligibility_rule(%s,'M',18,55,135,3000)", "CALL save_deferral_reason(%s,'SURG','Surgery',FALSE,180)",
     "CALL set_compatibility(%s,'RBC','AB+','O+',FALSE)"])
 def test_clinical_rules_are_admin_only(db, sql):
     assert "admin access only" in db.fails(sql, (db.nurse,))
