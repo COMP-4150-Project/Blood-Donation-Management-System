@@ -2,9 +2,9 @@
 {% block content %}
 <div class="page-head"><div><h1>Accounts</h1><p>Create staff and admin accounts, deactivate or reactivate any account, and reset passwords. Accounts are never deleted, so history stays intact.</p></div><a class="btn red" href="#create">Create account</a></div>
 <div class="card"><header>
- <form method="get" class="row" style="align-items:flex-end"><div style="width:min(100%,260px)"><label class="sr" for="uq">Search</label><input id="uq" name="q" type="search" value="{{ f.get('q','') }}" placeholder="Name or donor code"></div>
-  <div class="seg">{% for v, t in [('', 'All'), ('Donor','Donors'), ('Staff','Staff'), ('Admin','Admins')] %}<a href="{{ url_for('admin_users', role=v, q=f.get('q')) }}" aria-current="{{ 'true' if f.get('role','') == v else 'false' }}">{{ t }}</a>{% endfor %}</div></form></header>
-<div class="tablewrap"><table><thead><tr><th>Name</th><th>Role</th><th>Where</th><th>Since</th><th>Status</th><th></th></tr></thead><tbody>
+ <form method="get" class="row" style="align-items:flex-end"><div style="width:min(100%,260px)"><label class="sr" for="uq">Search</label><input id="uq" name="q" type="search" value="{{ f.get('q','') }}" placeholder="Name or donor code" maxlength="60"></div>
+  <div class="seg" role="group" aria-label="Filter by account type">{% for v, t in [('', 'All'), ('Donor','Donors'), ('Staff','Staff'), ('Admin','Admins')] %}<a href="{{ url_for('admin_users', role=v, q=f.get('q')) }}" {% if f.get('role','') == v %}aria-current="true"{% endif %}>{{ t }}</a>{% endfor %}</div></form></header>
+<div class="tablewrap"><table><thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Where</th><th scope="col">Since</th><th scope="col">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
 {% for u in items %}<tr><td><b>{{ u.first_name }} {{ u.last_name }}</b></td><td><span class="pill {{ {'Donor':'red','Staff':'teal','Admin':'grey'}[u.role] }}">{{ u.role }}</span></td>
  <td>{{ u.facility or u.donor_code or '—' }}{% if u.job_title %} <span class="muted">· {{ u.job_title }}</span>{% endif %}</td><td class="nowrap">{{ m.time(u.created_at, date=true) }}</td>
  <td><span class="pill {{ 'green' if u.is_active else 'grey' }}">{{ 'Active' if u.is_active else 'Deactivated' }}</span></td>
@@ -13,14 +13,14 @@
    {% if u.is_active %}<button class="btn danger sm" data-confirm="{{ u.first_name }} {{ u.last_name }} will no longer be able to sign in. Their history is kept." data-title="Deactivate account?" data-go="Deactivate">Deactivate</button>{% else %}<button class="btn ghost sm">Reactivate</button>{% endif %}</form>
   <details><summary class="btn ghost sm" style="list-style:none;cursor:pointer">Reset password</summary>
    <form method="post" action="{{ url_for('admin_user_password', user_id=u.user_id) }}" class="row" style="margin-top:8px">{{ m.csrf_field() }}<label class="sr" for="np{{ u.user_id }}">New password for {{ u.first_name }}</label>
-    <input id="np{{ u.user_id }}" name="new_password" type="password" minlength="10" required placeholder="New password" style="width:170px"><button class="btn teal sm">Set</button></form></details></div></td></tr>{% endfor %}</tbody></table></div></div>
+    <input id="np{{ u.user_id }}" name="new_password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required placeholder="New password" style="width:170px"><button class="btn teal sm">Set</button></form></details></div></td></tr>{% endfor %}</tbody></table></div>{{ m.shown_note(shown|default(none), total|default(none), 'accounts') }}</div>
 
-<form class="card" id="create" method="post" action="{{ url_for('admin_user_create') }}" novalidate>{{ m.csrf_field() }}<header><h3>Create a staff or admin account</h3></header>
+<form class="card" id="create" method="post" action="{{ url_for('admin_user_create') }}" novalidate>{{ m.csrf_field() }}<header><h2 class="h3">Create a staff or admin account</h2></header>
  <div class="form-grid">
   {{ m.select('role','Account type',[('Staff','Hospital staff'),('Admin','Administrator')]) }}
   {{ m.select('facility_id','Facility (staff only)',fac_opts, required=false, blank='Not needed for admins') }}
-  {{ m.field('first_name','First name') }}{{ m.field('last_name','Last name') }}
-  {{ m.field('email','Email','email') }}{{ m.field('job_title','Job title', required=false) }}
-  {{ m.field('password','Starting password','password', hint='At least 10 characters. Share it securely.', attrs='autocomplete="new-password" minlength="10"') }}</div>
+  {{ m.field('first_name','First name', attrs='maxlength="60" autocomplete="off"') }}{{ m.field('last_name','Last name', attrs='maxlength="60" autocomplete="off"') }}
+  {{ m.field('email','Email','email', attrs='maxlength="254" autocomplete="off"') }}{{ m.field('job_title','Job title', required=false, attrs='maxlength="80"') }}
+  {{ m.field('password','Starting password','password', hint='At least 10 characters. Share it securely.', attrs='autocomplete="new-password" minlength="10" maxlength="128"') }}</div>
  <button class="btn red" type="submit" style="margin-top:14px">Create account</button></form>
 {% endblock %}

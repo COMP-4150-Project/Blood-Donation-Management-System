@@ -19,7 +19,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 |---|---|
 | `setup.sh` | Builds the database from scratch (`./setup.sh`, or `./setup.sh --no-data` for an empty schema) |
 | `sql/01_schema.sql` | Tables, keys and constraints (generated from the Step 3 design) |
-| `sql/02_logic.sql` | Triggers, views, the eligibility function and core procedures (unit lifecycle, alerts, allocation, lookback, audit) |
+| `sql/02_logic.sql` | Estimated blood volume (Nadler, from sex, height and weight), triggers, views, the eligibility function and core procedures (unit lifecycle, alerts, allocation, lookback, audit) |
 | `sql/03_procedures.sql` | Use-case routines: registration, screening, deferrals, donations, testing, discards, thresholds, donation calls, account and facility management, login lockout, the nightly expiry procedure |
 | `sql/03_sessions.sql` | SE-06 sessions: hashed tokens and idle timeouts |
 | `sql/04_indexes.sql` | Performance indexes, each backed by `bench/index_ablation.md` |

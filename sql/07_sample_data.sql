@@ -126,82 +126,85 @@ INSERT INTO user_account (user_id, email, password_hash, first_name, last_name, 
     (168, 'sean.byrne@mail.ca', :'pw', 'Sean', 'Byrne', '519-555-1168', 'Donor', now() - interval '50 days'),
     (169, 'leila.karimi@mail.ca', :'pw', 'Leila', 'Karimi', '519-555-1169', 'Donor', now() - interval '70 days');
 
-INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group, verified_by, verified_at) VALUES
-    (101, 'D-1016', '1985-03-14', 'M', 91, '201 Ouellette Ave, Windsor, ON', 'O+', 4, now() - interval '290 days' - interval '30 minutes'),
-    (102, 'D-1017', '1992-07-22', 'F', 64, '202 Ouellette Ave, Windsor, ON', 'A+', 3, now() - interval '280 days' - interval '30 minutes'),
-    (103, 'D-1018', '1979-11-02', 'M', 77, '203 Ouellette Ave, Windsor, ON', 'O-', 4, now() - interval '300 days' - interval '30 minutes'),
-    (104, 'D-1019', '1996-01-30', 'F', 90, '204 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '250 days' - interval '30 minutes'),
-    (105, 'D-1020', '1970-06-18', 'M', 63, '205 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '330 days' - interval '30 minutes'),
-    (106, 'D-1021', '1999-09-05', 'F', 76, '206 Ouellette Ave, Windsor, ON', 'B+', 3, now() - interval '200 days' - interval '30 minutes'),
-    (107, 'D-1022', '1988-12-11', 'M', 89, '207 Ouellette Ave, Windsor, ON', 'A-', 4, now() - interval '240 days' - interval '30 minutes'),
-    (108, 'D-1023', '1983-04-27', 'M', 62, '208 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '60 days' - interval '30 minutes'),
-    (109, 'D-1024', '1994-08-16', 'F', 75, '209 Ouellette Ave, Windsor, ON', 'AB+', 4, now() - interval '150 days' - interval '30 minutes'),
-    (110, 'D-1025', '1975-02-09', 'M', 88, '210 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '20 days' - interval '30 minutes'),
-    (111, 'D-1026', '1990-10-03', 'F', 61, '211 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '310 days' - interval '30 minutes'),
-    (112, 'D-1027', '1981-05-21', 'M', 74, '212 Ouellette Ave, Windsor, ON', 'O-', 3, now() - interval '190 days' - interval '30 minutes'),
-    (113, 'D-1028', '1987-07-07', 'M', 87, '213 Ouellette Ave, Windsor, ON', 'O+', 5, now() - interval '295 days' - interval '30 minutes'),
-    (114, 'D-1029', '1995-03-19', 'F', 60, '214 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '260 days' - interval '30 minutes'),
-    (115, 'D-1030', '1968-11-25', 'M', 73, '215 Ouellette Ave, Windsor, ON', 'B+', 6, now() - interval '280 days' - interval '30 minutes'),
-    (116, 'D-1031', '1993-06-12', 'F', 86, '216 Ouellette Ave, Windsor, ON', 'O+', 5, now() - interval '230 days' - interval '30 minutes'),
-    (117, 'D-1032', '1986-09-29', 'M', 59, '217 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '175 days' - interval '30 minutes'),
-    (118, 'D-1033', '1977-01-15', 'M', 72, '218 Ouellette Ave, Windsor, ON', 'O-', 5, now() - interval '320 days' - interval '30 minutes'),
-    (119, 'D-1034', '1998-04-04', 'F', 85, '219 Ouellette Ave, Windsor, ON', 'A-', 6, now() - interval '210 days' - interval '30 minutes'),
-    (120, 'D-1035', '1991-12-20', 'M', 58, '220 Ouellette Ave, Windsor, ON', 'O+', 6, now() - interval '145 days' - interval '30 minutes'),
-    (121, 'D-1036', '1984-08-08', 'F', 71, '221 Ouellette Ave, Windsor, ON', 'AB-', 6, now() - interval '260 days' - interval '30 minutes'),
-    (122, 'D-1037', '1980-02-28', 'M', 84, '222 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '300 days' - interval '30 minutes'),
-    (123, 'D-1038', '2000-05-17', 'F', 97, '223 Ouellette Ave, Windsor, ON', 'O+', 6, now() - interval '90 days' - interval '30 minutes'),
-    (124, 'D-1039', '1989-10-10', 'M', 70, '224 Ouellette Ave, Windsor, ON', 'B-', 6, now() - interval '185 days' - interval '30 minutes'),
-    (125, 'D-1040', '1973-07-31', 'M', 83, '225 Ouellette Ave, Windsor, ON', 'O+', 8, now() - interval '270 days' - interval '30 minutes'),
-    (126, 'D-1041', '1997-11-14', 'F', 96, '226 Ouellette Ave, Windsor, ON', 'A+', 7, now() - interval '200 days' - interval '30 minutes'),
-    (127, 'D-1042', '1982-03-03', 'M', 69, '227 Ouellette Ave, Windsor, ON', 'B+', 4, now() - interval '300 days' - interval '30 minutes'),
-    (128, 'D-1043', '1990-06-06', 'F', 82, '228 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '120 days' - interval '30 minutes'),
-    (129, 'D-1044', '1994-12-01', 'M', 95, '229 Ouellette Ave, Windsor, ON', 'A+', 8, now() - interval '200 days' - interval '30 minutes'),
-    (130, 'D-1045', '1986-01-23', 'F', 68, '230 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '150 days' - interval '30 minutes'),
-    (131, 'D-1046', '1978-09-09', 'M', 81, '231 Ouellette Ave, Windsor, ON', 'AB+', 8, now() - interval '80 days' - interval '30 minutes'),
-    (132, 'D-1047', '1992-02-14', 'F', 94, '232 Ouellette Ave, Windsor, ON', 'O-', 7, now() - interval '170 days' - interval '30 minutes'),
+INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, height_cm, address, blood_group, verified_by, verified_at) VALUES
+    (101, 'D-1016', '1985-03-14', 'M', 91, 193, '201 Ouellette Ave, Windsor, ON', 'O+', 4, now() - interval '290 days' - interval '30 minutes'),
+    (102, 'D-1017', '1992-07-22', 'F', 64, 155, '202 Ouellette Ave, Windsor, ON', 'A+', 3, now() - interval '280 days' - interval '30 minutes'),
+    (103, 'D-1018', '1979-11-02', 'M', 77, 178, '203 Ouellette Ave, Windsor, ON', 'O-', 4, now() - interval '300 days' - interval '30 minutes'),
+    (104, 'D-1019', '1996-01-30', 'F', 90, 176, '204 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '250 days' - interval '30 minutes'),
+    (105, 'D-1020', '1970-06-18', 'M', 63, 164, '205 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '330 days' - interval '30 minutes'),
+    (106, 'D-1021', '1999-09-05', 'F', 76, 176, '206 Ouellette Ave, Windsor, ON', 'B+', 3, now() - interval '200 days' - interval '30 minutes'),
+    (107, 'D-1022', '1988-12-11', 'M', 89, 191, '207 Ouellette Ave, Windsor, ON', 'A-', 4, now() - interval '240 days' - interval '30 minutes'),
+    (108, 'D-1023', '1983-04-27', 'M', 62, 168, '208 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '60 days' - interval '30 minutes'),
+    (109, 'D-1024', '1994-08-16', 'F', 75, 173, '209 Ouellette Ave, Windsor, ON', 'AB+', 4, now() - interval '150 days' - interval '30 minutes'),
+    (110, 'D-1025', '1975-02-09', 'M', 88, 193, '210 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '20 days' - interval '30 minutes'),
+    (111, 'D-1026', '1990-10-03', 'F', 61, 154, '211 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '310 days' - interval '30 minutes'),
+    (112, 'D-1027', '1981-05-21', 'M', 74, 184, '212 Ouellette Ave, Windsor, ON', 'O-', 3, now() - interval '190 days' - interval '30 minutes'),
+    (113, 'D-1028', '1987-07-07', 'M', 87, 182, '213 Ouellette Ave, Windsor, ON', 'O+', 5, now() - interval '295 days' - interval '30 minutes'),
+    (114, 'D-1029', '1995-03-19', 'F', 60, 163, '214 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '260 days' - interval '30 minutes'),
+    (115, 'D-1030', '1968-11-25', 'M', 73, 164, '215 Ouellette Ave, Windsor, ON', 'B+', 6, now() - interval '280 days' - interval '30 minutes'),
+    (116, 'D-1031', '1993-06-12', 'F', 86, 176, '216 Ouellette Ave, Windsor, ON', 'O+', 5, now() - interval '230 days' - interval '30 minutes'),
+    (117, 'D-1032', '1986-09-29', 'M', 59, 164, '217 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '175 days' - interval '30 minutes'),
+    (118, 'D-1033', '1977-01-15', 'M', 72, 174, '218 Ouellette Ave, Windsor, ON', 'O-', 5, now() - interval '320 days' - interval '30 minutes'),
+    (119, 'D-1034', '1998-04-04', 'F', 85, 176, '219 Ouellette Ave, Windsor, ON', 'A-', 6, now() - interval '210 days' - interval '30 minutes'),
+    (120, 'D-1035', '1991-12-20', 'M', 58, 164, '220 Ouellette Ave, Windsor, ON', 'O+', 6, now() - interval '145 days' - interval '30 minutes'),
+    (121, 'D-1036', '1984-08-08', 'F', 71, 160, '221 Ouellette Ave, Windsor, ON', 'AB-', 6, now() - interval '260 days' - interval '30 minutes'),
+    (122, 'D-1037', '1980-02-28', 'M', 84, 188, '222 Ouellette Ave, Windsor, ON', 'A+', 5, now() - interval '300 days' - interval '30 minutes'),
+    (123, 'D-1038', '2000-05-17', 'F', 97, 176, '223 Ouellette Ave, Windsor, ON', 'O+', 6, now() - interval '90 days' - interval '30 minutes'),
+    (124, 'D-1039', '1989-10-10', 'M', 70, 169, '224 Ouellette Ave, Windsor, ON', 'B-', 6, now() - interval '185 days' - interval '30 minutes'),
+    (125, 'D-1040', '1973-07-31', 'M', 83, 193, '225 Ouellette Ave, Windsor, ON', 'O+', 8, now() - interval '270 days' - interval '30 minutes'),
+    (126, 'D-1041', '1997-11-14', 'F', 96, 176, '226 Ouellette Ave, Windsor, ON', 'A+', 7, now() - interval '200 days' - interval '30 minutes'),
+    (127, 'D-1042', '1982-03-03', 'M', 69, 180, '227 Ouellette Ave, Windsor, ON', 'B+', 4, now() - interval '300 days' - interval '30 minutes'),
+    (128, 'D-1043', '1990-06-06', 'F', 82, 176, '228 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '120 days' - interval '30 minutes'),
+    (129, 'D-1044', '1994-12-01', 'M', 95, 193, '229 Ouellette Ave, Windsor, ON', 'A+', 8, now() - interval '200 days' - interval '30 minutes'),
+    (130, 'D-1045', '1986-01-23', 'F', 68, 160, '230 Ouellette Ave, Windsor, ON', 'O+', 7, now() - interval '150 days' - interval '30 minutes'),
+    (131, 'D-1046', '1978-09-09', 'M', 81, 189, '231 Ouellette Ave, Windsor, ON', 'AB+', 8, now() - interval '80 days' - interval '30 minutes'),
+    (132, 'D-1047', '1992-02-14', 'F', 94, 176, '232 Ouellette Ave, Windsor, ON', 'O-', 7, now() - interval '170 days' - interval '30 minutes'),
     -- lapsed regulars (Q11): gave three or four times, then stopped coming about six months ago
-    (137, 'D-1052', '1984-05-09', 'F', 66, '237 Ouellette Ave, Windsor, ON', 'O-', 7, now() - interval '320 days' - interval '30 minutes'),
-    (138, 'D-1053', '1976-10-21', 'M', 92, '238 Ouellette Ave, Windsor, ON', 'O+', 4, now() - interval '320 days' - interval '30 minutes'),
-    (139, 'D-1054', '1991-03-02', 'F', 63, '239 Ouellette Ave, Windsor, ON', 'B-', 8, now() - interval '310 days' - interval '30 minutes'),
-    (140, 'D-1055', '1982-08-17', 'M', 80, '240 Ouellette Ave, Windsor, ON', 'AB+', 7, now() - interval '300 days' - interval '30 minutes'),
-    (141, 'D-1056', '1972-12-05', 'M', 78, '241 Ouellette Ave, Windsor, ON', 'O-', 5, now() - interval '315 days' - interval '30 minutes'),
-    (142, 'D-1057', '1989-06-28', 'F', 70, '242 Ouellette Ave, Windsor, ON', 'A-', 3, now() - interval '300 days' - interval '30 minutes'),
+    (137, 'D-1052', '1984-05-09', 'F', 66, 168, '237 Ouellette Ave, Windsor, ON', 'O-', 7, now() - interval '320 days' - interval '30 minutes'),
+    (138, 'D-1053', '1976-10-21', 'M', 92, 182, '238 Ouellette Ave, Windsor, ON', 'O+', 4, now() - interval '320 days' - interval '30 minutes'),
+    (139, 'D-1054', '1991-03-02', 'F', 78, 172, '239 Ouellette Ave, Windsor, ON', 'B-', 8, now() - interval '310 days' - interval '30 minutes'),
+    (140, 'D-1055', '1982-08-17', 'M', 80, 193, '240 Ouellette Ave, Windsor, ON', 'AB+', 7, now() - interval '300 days' - interval '30 minutes'),
+    (141, 'D-1056', '1972-12-05', 'M', 78, 178, '241 Ouellette Ave, Windsor, ON', 'O-', 5, now() - interval '315 days' - interval '30 minutes'),
+    (142, 'D-1057', '1989-06-28', 'F', 70, 176, '242 Ouellette Ave, Windsor, ON', 'A-', 3, now() - interval '300 days' - interval '30 minutes'),
     -- platelet apheresis donor at Riverside's donor clinic
-    (143, 'D-1058', '1987-01-19', 'M', 86, '243 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '280 days' - interval '30 minutes'),
+    (143, 'D-1058', '1987-01-19', 'M', 86, 184, '243 Ouellette Ave, Windsor, ON', 'A+', 4, now() - interval '280 days' - interval '30 minutes'),
     -- HIV-positive donation (permanent deferral) and a pregnancy deferral
-    (144, 'D-1059', '1993-09-14', 'M', 79, '244 Ouellette Ave, Windsor, ON', 'A+', 6, now() - interval '120 days' - interval '30 minutes'),
-    (145, 'D-1060', '1995-11-08', 'F', 67, '245 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '200 days' - interval '30 minutes'),
+    (144, 'D-1059', '1993-09-14', 'M', 79, 191, '244 Ouellette Ave, Windsor, ON', 'A+', 6, now() - interval '120 days' - interval '30 minutes'),
+    (145, 'D-1060', '1995-11-08', 'F', 67, 160, '245 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '200 days' - interval '30 minutes'),
     -- registered but never donated: a new 18-year-old, under 50 kg, group unknown, brand new (an under-17 sign-up is
     -- refused by register_donor, UC-01 2b, so it has no row here)
-    (133, 'D-1048', (CURRENT_DATE - interval '18 years 2 months')::date, 'F', 55, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
-    (134, 'D-1049', '2001-04-12', 'M', 47.5, '234 Ouellette Ave, Windsor, ON', 'O+', NULL, NULL),
-    (135, 'D-1050', '1999-08-30', 'F', 61, '235 Ouellette Ave, Windsor, ON', NULL, NULL, NULL),
-    (136, 'D-1051', '2003-02-02', 'M', 74, '236 Ouellette Ave, Windsor, ON', 'B+', NULL, NULL);
+    (133, 'D-1048', (CURRENT_DATE - interval '18 years 2 months')::date, 'F', 55, 153, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
+    (134, 'D-1049', '2001-04-12', 'M', 47.5, 164, '234 Ouellette Ave, Windsor, ON', 'O+', NULL, NULL),
+    -- Aisha is the sample donor who fails the estimated blood volume rule on purpose: 51 kg and 146 cm give about 2.98 L, under the
+    -- 3.0 L minimum, although her weight is above the 50 kg limit. (No male donor in this range can fall under 3.0 L at 50 kg or more;
+    -- raise the male minimum in the admin Clinical rules to see the same result for a man.)
+    (135, 'D-1050', '1999-08-30', 'F', 51, 146, '235 Ouellette Ave, Windsor, ON', NULL, NULL, NULL),
+    (136, 'D-1051', '2003-02-02', 'M', 74, 165, '236 Ouellette Ave, Windsor, ON', 'B+', NULL, NULL);
 -- O-negative regulars who last gave four to eight months ago: with the three above, the 14 O- donors Maya can call in
 -- Scenario 1 (FR-25). Verified by the staff member who took their donation (FR-09).
-INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group, verified_by, verified_at)
-SELECT uid, 'D-' || (1061 + uid - 146), dob::date, sex, kg, (201 + uid - 100) || ' Ouellette Ave, Windsor, ON', 'O-', staff,
+INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, height_cm, address, blood_group, verified_by, verified_at)
+SELECT uid, 'D-' || (1061 + uid - 146), dob::date, sex, kg, cm, (201 + uid - 100) || ' Ouellette Ave, Windsor, ON', 'O-', staff,
        now() - make_interval(days => days_ago) - interval '30 minutes'
-FROM (VALUES (146, '1986-02-11', 'M', 82, 4, 180), (147, '1990-07-04', 'F', 63, 7, 230), (148, '1979-10-19', 'M', 88, 5, 150),
-             (149, '1994-03-27', 'F', 58, 8, 210), (150, '1988-12-02', 'M', 76, 3, 120), (151, '1996-05-15', 'F', 66, 6, 195),
-             (152, '1983-09-08', 'M', 93, 7, 240), (153, '1991-01-30', 'F', 70, 4, 165), (154, '1975-06-21', 'M', 85, 5, 135),
-             (155, '1987-11-12', 'F', 61, 8, 250), (156, '1999-04-03', 'M', 79, 3, 105)) AS v(uid, dob, sex, kg, staff, days_ago);
+FROM (VALUES (146, '1986-02-11', 'M', 82, 192, 4, 180), (147, '1990-07-04', 'F', 63, 158, 7, 230), (148, '1979-10-19', 'M', 88, 193, 5, 150),
+             (149, '1994-03-27', 'F', 58, 152, 8, 210), (150, '1988-12-02', 'M', 76, 180, 3, 120), (151, '1996-05-15', 'F', 66, 157, 6, 195),
+             (152, '1983-09-08', 'M', 93, 193, 7, 240), (153, '1991-01-30', 'F', 70, 160, 4, 165), (154, '1975-06-21', 'M', 85, 190, 5, 135),
+             (155, '1987-11-12', 'F', 61, 152, 8, 250), (156, '1999-04-03', 'M', 79, 181, 3, 105)) AS v(uid, dob, sex, kg, cm, staff, days_ago);
 -- Scenario 2: Priya is 19 and self-reported B-positive (unverified until her first donation). Scenario 3: Marcus is a regular
 -- O-positive donor at Lakeshore. Unknown groups stay NULL and unverified, so those donors are never called (FR-25).
-INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, address, blood_group, verified_by, verified_at) VALUES
-    (157, 'D-1072', (CURRENT_DATE - interval '19 years 3 months')::date, 'F', 58, '18 Sunset Ave, Windsor, ON', 'B+', NULL, NULL),
-    (158, 'D-1073', '1988-04-22', 'M', 84, '57 Lakeshore Blvd, Windsor, ON', 'O+', 7, now() - interval '290 days' - interval '30 minutes'),
-    (159, 'D-1074', '1993-08-09', 'M', 80, '920 Erie St E, Windsor, ON', 'O-', 4, now() - interval '18 days' - interval '30 minutes'),
-    (160, 'D-1075', '1998-02-17', 'F', 62, '41 Tecumseh Rd W, Windsor, ON', NULL, NULL, NULL),
-    (161, 'D-1076', '1985-11-30', 'M', 88, '1500 Howard Ave, Windsor, ON', NULL, NULL, NULL),
-    (162, 'D-1077', '2004-06-05', 'M', 71, '303 Pelissier St, Windsor, ON', NULL, NULL, NULL),
-    (163, 'D-1078', '1990-01-12', 'M', 83, '77 Giles Blvd E, Windsor, ON', 'A+', 4, now() - interval '12 days' - interval '30 minutes'),
-    (164, 'D-1079', '1994-05-03', 'F', 66, '12 Main St, Tecumseh, ON', 'O+', 6, now() - interval '9 days' - interval '30 minutes'),
-    (165, 'D-1080', '1987-09-14', 'M', 90, '88 Rourke Line, Belle River, ON', 'O+', 10, now() - interval '16 days' - interval '30 minutes'),
-    (166, 'D-1081', '1982-03-27', 'M', 76, '9 Notre Dame St, Belle River, ON', 'A+', 10, now() - interval '21 days' - interval '30 minutes'),
-    (167, 'D-1082', '1997-12-08', 'F', 61, '640 Lesperance Rd, Tecumseh, ON', 'O+', 5, now() - interval '6 days' - interval '30 minutes'),
-    (168, 'D-1083', '1991-07-19', 'M', 85, '2050 Wyandotte St W, Windsor, ON', 'B+', 4, now() - interval '11 days' - interval '30 minutes'),
-    (169, 'D-1084', '1989-10-25', 'F', 64, '415 Manning Rd, Tecumseh, ON', 'A+', 6, now() - interval '27 days' - interval '30 minutes');
+INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, height_cm, address, blood_group, verified_by, verified_at) VALUES
+    (157, 'D-1072', (CURRENT_DATE - interval '19 years 3 months')::date, 'F', 58, 152, '18 Sunset Ave, Windsor, ON', 'B+', NULL, NULL),
+    (158, 'D-1073', '1988-04-22', 'M', 84, 184, '57 Lakeshore Blvd, Windsor, ON', 'O+', 7, now() - interval '290 days' - interval '30 minutes'),
+    (159, 'D-1074', '1993-08-09', 'M', 80, 193, '920 Erie St E, Windsor, ON', 'O-', 4, now() - interval '18 days' - interval '30 minutes'),
+    (160, 'D-1075', '1998-02-17', 'F', 62, 155, '41 Tecumseh Rd W, Windsor, ON', NULL, NULL, NULL),
+    (161, 'D-1076', '1985-11-30', 'M', 88, 193, '1500 Howard Ave, Windsor, ON', NULL, NULL, NULL),
+    (162, 'D-1077', '2004-06-05', 'M', 71, 169, '303 Pelissier St, Windsor, ON', NULL, NULL, NULL),
+    (163, 'D-1078', '1990-01-12', 'M', 83, 193, '77 Giles Blvd E, Windsor, ON', 'A+', 4, now() - interval '12 days' - interval '30 minutes'),
+    (164, 'D-1079', '1994-05-03', 'F', 66, 161, '12 Main St, Tecumseh, ON', 'O+', 6, now() - interval '9 days' - interval '30 minutes'),
+    (165, 'D-1080', '1987-09-14', 'M', 90, 193, '88 Rourke Line, Belle River, ON', 'O+', 10, now() - interval '16 days' - interval '30 minutes'),
+    (166, 'D-1081', '1982-03-27', 'M', 76, 170, '9 Notre Dame St, Belle River, ON', 'A+', 10, now() - interval '21 days' - interval '30 minutes'),
+    (167, 'D-1082', '1997-12-08', 'F', 61, 165, '640 Lesperance Rd, Tecumseh, ON', 'O+', 5, now() - interval '6 days' - interval '30 minutes'),
+    (168, 'D-1083', '1991-07-19', 'M', 85, 178, '2050 Wyandotte St W, Windsor, ON', 'B+', 4, now() - interval '11 days' - interval '30 minutes'),
+    (169, 'D-1084', '1989-10-25', 'F', 64, 167, '415 Manning Rd, Tecumseh, ON', 'A+', 6, now() - interval '27 days' - interval '30 minutes');
 
 -- ---------------------------------------------------------------- screening before every clinic visit (FR-06)
 INSERT INTO screening (screening_id, donor_id, completed_at) VALUES
@@ -790,7 +793,7 @@ CALL record_tests(122, '{"HIV": "Negative", "HBV": "Negative", "HCV": "Negative"
 -- live actions this morning, written to the audit log with the acting user (FR-33):
 -- donor D-1046 (user 131) updates his phone number and address himself (UC-03)
 SELECT set_config('vytal.user_id', '131', false);
-CALL update_donor_profile(131, '519-555-2131', 'samuel.gauthier@mail.ca', '88 Wyandotte St E, Windsor, ON', 81);
+CALL update_donor_profile(131, '519-555-2131', 'samuel.gauthier@mail.ca', '88 Wyandotte St E, Windsor, ON', 81, 189);
 -- James screens and bleeds donor D-1016 (user 101) at Riverside; the bag is split and waits for its test results (UC-07, UC-08)
 SELECT set_config('vytal.user_id', '4', false);
 DO $$ DECLARE sid int; dn int; units varchar[]; BEGIN
@@ -800,7 +803,7 @@ DO $$ DECLARE sid int; dn int; units varchar[]; BEGIN
 END $$;
 -- a new donor signs up online (FR-01); self-registration has no acting user yet
 SELECT set_config('vytal.user_id', '', false);
-CALL register_donor('zoe.marchand@mail.ca', :'pw', 'Zoe', 'Marchand', '519-555-1157', '2002-09-17', 'F', 59,
+CALL register_donor('zoe.marchand@mail.ca', :'pw', 'Zoe', 'Marchand', '519-555-1157', '2002-09-17', 'F', 59, 165,
                     '410 University Ave W, Windsor, ON', 'A-');
 SELECT set_config('vytal.user_id', '1', false);
 

@@ -1,13 +1,13 @@
 {% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Test results{% endblock %}{% block crumb %}Test results{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Test results</h1><p>Units stay on hold until every infectious disease test is recorded. A positive result quarantines the donor's units.</p></div></div>
-<div class="card"><header><h3>Waiting for results</h3><span class="pill {{ 'amber' if pending else 'green' }}">{{ pending|length }} donation{{ '' if pending|length == 1 else 's' }}</span></header>
+<div class="page-head"><div><h1>Test results</h1><p>Units stay on hold until every infectious disease test is recorded. A positive result means the units from that donation are discarded and the donor is flagged.</p></div></div>
+<div class="card"><header><h2 class="h3">Waiting for results</h2><span class="pill {{ 'amber' if pending else 'green' }}">{{ pending|length }} donation{{ '' if pending|length == 1 else 's' }}</span></header>
 {% if pending %}<div class="grid">{% for p in pending %}<form class="card" method="post" action="{{ url_for('staff_tests_save', donation_id=p.donation_id) }}" style="box-shadow:none;background:var(--surface-2)">
  {{ m.csrf_field() }}<div class="row" style="align-items:center;justify-content:space-between;margin-bottom:12px"><div><b>Donation #{{ p.donation_id }}</b> <span class="mono muted">{{ p.donor_code }}</span><div class="muted">{{ m.time(p.donated_at) }} · {{ p.units }} unit{{ '' if p.units == 1 else 's' }}</div></div></div>
- <div class="row">{% for t in tests %}<div style="width:150px" class="field"><label for="t{{ p.donation_id }}{{ t.test_code }}">{{ t.name }}</label>
-  <select id="t{{ p.donation_id }}{{ t.test_code }}" name="t_{{ t.test_code }}"><option>Negative</option><option>Positive</option></select></div>{% endfor %}
-  <button class="btn teal" type="submit" data-confirm="Results cannot be changed once saved. A positive result quarantines this donor's units." data-title="Save test results?" data-go="Save results">Save results</button></div></form>{% endfor %}</div>
+ <div class="row">{% for t in tests %}<div style="width:150px" class="field"><label for="t{{ p.donation_id }}-{{ t.test_code }}">{{ t.name }}</label>
+  <select id="t{{ p.donation_id }}-{{ t.test_code }}" name="t_{{ t.test_code }}"><option>Negative</option><option>Positive</option></select></div>{% endfor %}
+  <button class="btn teal" type="submit" data-confirm="Results cannot be changed once saved. A positive result discards the units from this donation and flags the donor." data-title="Save test results?" data-go="Save results">Save results</button></div></form>{% endfor %}</div>
 {% else %}{{ m.empty('Every donation has its results. Nothing is waiting.') }}{% endif %}</div>
-<div class="card"><header><h3>Recent donations</h3></header><div class="tablewrap"><table><thead><tr><th>#</th><th>Donor</th><th>Date</th><th>Type</th><th>Volume</th><th>Units</th></tr></thead><tbody>
-{% for d in recent %}<tr><td class="mono">{{ d.donation_id }}</td><td class="mono">{{ d.donor_code }}</td><td>{{ m.time(d.donated_at) }}</td><td>{{ {'WB':'Whole blood','PLS':'Plasma','PLT':'Platelets'}.get(d.donation_type_code) }}</td><td class="mono">{{ d.volume_ml }} ml</td><td class="mono">{{ d.units }}</td></tr>{% endfor %}</tbody></table></div></div>
+<div class="card"><header><h2 class="h3">Recent donations</h2></header><div class="tablewrap"><table><thead><tr><th scope="col">#</th><th scope="col">Donor</th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Volume</th><th scope="col">Units</th></tr></thead><tbody>
+{% for d in recent %}<tr><td class="mono">{{ d.donation_id }}</td><td class="mono">{{ d.donor_code }}</td><td>{{ m.time(d.donated_at) }}</td><td>{{ {'WB':'Whole blood','PLS':'Plasma','PLT':'Platelets'}.get(d.donation_type_code, d.donation_type_code) }}</td><td class="mono">{{ d.volume_ml }} ml</td><td class="mono">{{ d.units }}</td></tr>{% endfor %}</tbody></table></div></div>
 {% endblock %}

@@ -2,12 +2,14 @@
 {% block content %}
 <div class="page-head"><div><h1>Blood requests</h1><p>Most urgent first, then by the time the blood is needed.</p></div><div class="actions"><a class="btn red" href="{{ url_for('staff_request_new') }}">New blood request</a></div></div>
 <div class="card"><header>
- <div class="seg">{% for v, t in [('', 'All'), ('Open','Open'), ('Fulfilled','Fulfilled'), ('Cancelled','Cancelled')] %}<a href="{{ url_for('staff_requests', status=v) }}" aria-current="{{ 'true' if status == v else 'false' }}">{{ t }}</a>{% endfor %}</div>
- <div style="width:min(100%,260px)"><label class="sr" for="q">Filter</label><input id="q" type="search" placeholder="Filter by patient or group" data-filter="#rt"></div></header>
-{% if items %}<div class="tablewrap"><table id="rt"><thead><tr><th>Request</th><th>Patient</th><th>Group</th><th>Component</th><th>Units</th><th>Urgency</th><th>Needed</th><th>Status</th><th></th></tr></thead><tbody>
+ <div class="seg" role="group" aria-label="Filter by status">{% for v, t in [('', 'All'), ('Open','Open'), ('Partially Fulfilled','Partially filled'), ('Fulfilled','Fulfilled'), ('Cancelled','Cancelled')] %}<a href="{{ url_for('staff_requests', status=v) }}" {% if status == v %}aria-current="true"{% endif %}>{{ t }}</a>{% endfor %}</div>
+ <div style="width:min(100%,260px)"><label class="sr" for="q">Filter</label><input id="q" type="search" placeholder="Filter by patient or group" maxlength="40" data-filter="#rt" data-empty="#none-q" autocomplete="off"></div></header>
+{% if items %}<div class="tablewrap"><table id="rt"><thead><tr><th scope="col">Request</th><th scope="col">Patient</th><th scope="col">Group</th><th scope="col">Component</th><th scope="col">Units</th><th scope="col">Urgency</th><th scope="col">Needed</th><th scope="col">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
 {% for r in items %}<tr><td class="mono">#{{ r.request_id }}</td><td class="mono">{{ r.patient_ref }}</td><td>{{ m.bt(r.recipient_group) }}</td><td>{{ r.component_code|comp }}</td>
  <td class="mono nowrap">{{ r.units_reserved }}/{{ r.units_requested }}{% if r.shortfall and r.status == 'Open' %} <span class="pill red">{{ r.shortfall }} short</span>{% endif %}</td>
  <td>{{ m.urgency(r.urgency) }}</td><td class="nowrap">{{ m.time(r.required_by, rel=true) }}</td><td>{{ m.status(r.status) }}</td>
  <td><a class="btn ghost sm" href="{{ url_for('staff_request', request_id=r.request_id) }}">Open</a></td></tr>{% endfor %}</tbody></table></div>
+<p class="empty muted" id="none-q" role="status" hidden>No requests match that filter.</p>
+{{ m.shown_note(shown|default(none), total|default(none), 'requests') }}
 {% else %}{{ m.empty('No requests match this view.') }}{% endif %}</div>
 {% endblock %}

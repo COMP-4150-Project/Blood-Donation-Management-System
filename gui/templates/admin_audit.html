@@ -2,15 +2,16 @@
 {% block content %}
 <div class="page-head"><div><h1>Audit log</h1><p>Every change to sensitive data, who made it and when. The log can be read and exported but never edited.</p></div><a class="btn ghost" href="{{ url_for('admin_audit_csv', **f) }}">Export CSV</a></div>
 <form class="card" method="get"><div class="form-grid">
- <div class="field"><label for="au">User id</label><input id="au" name="user" type="number" value="{{ f.get('user','') }}" placeholder="Any"></div>
+ <div class="field"><label for="au">User id</label><input id="au" name="user" type="number" min="1" step="1" value="{{ f.get('user','') }}" placeholder="Any"></div>
  <div class="field"><label for="at">Table</label><select id="at" name="table"><option value="">Any table</option>{% for t in tables %}<option {% if f.get('table') == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div>
- <div class="field"><label for="ar">Record id</label><input id="ar" name="record" value="{{ f.get('record','') }}" placeholder="Any"></div>
+ <div class="field"><label for="ar">Record id</label><input id="ar" name="record" maxlength="40" value="{{ f.get('record','') }}" placeholder="Any"></div>
  <div class="field"><label for="as">From</label><input id="as" name="since" type="date" value="{{ f.get('since','') }}"></div>
  <div class="field"><label for="ae">To</label><input id="ae" name="until" type="date" value="{{ f.get('until','') }}"></div></div>
  <div class="actions" style="margin-top:14px"><button class="btn teal" type="submit">Apply filters</button><a class="btn ghost" href="{{ url_for('admin_audit') }}">Clear</a></div></form>
-<div class="card"><header><h3>{{ items|length }} entr{{ 'y' if items|length == 1 else 'ies' }}</h3><span class="muted">Newest first, up to 300</span></header>
-{% if items %}<div class="tablewrap"><table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Table</th><th>Record</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>
+<div class="card"><header><h2 class="h3">{{ items|length }} entr{{ 'y' if items|length == 1 else 'ies' }}</h2><span class="muted">Newest first, up to 300</span></header>
+{% if items %}<div class="tablewrap"><table><thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Table</th><th scope="col">Record</th><th scope="col">Field</th><th scope="col">Before</th><th scope="col">After</th></tr></thead><tbody>
 {% for a in items %}<tr><td class="nowrap">{{ m.time(a[1]) }}</td><td class="mono">{{ a[2] or '—' }}</td><td><span class="pill {{ {'INSERT':'green','UPDATE':'amber','DELETE':'red','JOB':'grey'}.get(a[3],'grey') }}">{{ a[3] }}</span></td><td class="mono">{{ a[4] }}</td><td class="mono">{{ a[5] }}</td><td>{{ a[6] or '' }}</td>
  <td class="muted" style="max-width:200px;overflow-wrap:anywhere">{{ a[7] if a[7] is not none else '' }}</td><td style="max-width:200px;overflow-wrap:anywhere">{{ a[8] if a[8] is not none else '' }}</td></tr>{% endfor %}</tbody></table></div>
+{{ m.shown_note(shown|default(none), total|default(none), 'entries') }}
 {% else %}{{ m.empty('No entries match these filters.') }}{% endif %}</div>
 {% endblock %}

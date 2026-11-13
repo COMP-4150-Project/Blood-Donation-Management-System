@@ -23,7 +23,8 @@ WHERE r.abo = 'O' OR position(r.abo IN d.abo) > 0;
 INSERT INTO donation_type VALUES ('WB','Whole Blood'), ('PLS','Plasma'), ('PLT','Platelets');
 INSERT INTO donation_interval VALUES
     ('WB','M',56), ('WB','F',84), ('PLS','M',7), ('PLS','F',7), ('PLT','M',14), ('PLT','F',14);
-INSERT INTO eligibility_rule VALUES ('M',17,50,130), ('F',17,50,125);
+INSERT INTO eligibility_rule (sex, min_age_years, min_weight_kg, min_hemoglobin_gl, min_blood_volume_ml)
+VALUES ('M',17,50,130,3000), ('F',17,50,125,3000);
 
 INSERT INTO deferral_reason VALUES
     ('TATTOO','Tattoo or piercing in the last 3 months',FALSE,90),

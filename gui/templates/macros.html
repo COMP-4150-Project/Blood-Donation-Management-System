@@ -1,5 +1,5 @@
 {% macro logo(size='1.7rem') -%}
-<a class="logo" style="--ls:{{ size }}" href="{{ url_for('landing') }}" aria-label="Vytal home"><svg viewBox="8 8 48 56" aria-hidden="true"><use href="#vmark"/></svg><span>ytal</span></a>
+<a class="logo" style="--ls:{{ size }}" href="{{ url_for('landing') }}" aria-label="Vytal home"><img class="lg-light" src="{{ url_for('static', filename='vytal-logo-light.png') }}" alt="Vytal" width="520" height="320"><img class="lg-dark" src="{{ url_for('static', filename='vytal-logo-dark.png') }}" alt="" aria-hidden="true" width="520" height="320"></a>
 {%- endmacro %}
 
 {% macro icon(name) -%}
@@ -54,13 +54,15 @@
 {%- endmacro %}
 
 {% macro status(s) -%}
-<span class="pill {{ {'Open':'teal','Fulfilled':'green','Partially Fulfilled':'amber','Cancelled':'grey','Available':'green','Reserved':'teal','Quarantined':'red','Collected':'amber','Issued':'grey','Expired':'grey','Discarded':'grey','Accepted':'green','Declined':'grey','Pending':'amber'}.get(s,'grey') }}">{{ s }}</span>
+<span class="pill {{ {'Open':'teal','Fulfilled':'green','Partially Fulfilled':'amber','Cancelled':'grey','Available':'green','Reserved':'teal','Quarantined':'red','Collected':'amber','Issued':'grey','Expired':'grey','Discarded':'grey','Accepted':'green','Declined':'grey','Pending':'amber','Closed':'grey'}.get(s,'grey') }}">{{ s }}</span>
 {%- endmacro %}
 
 {% macro bt(g) -%}{% if g %}<span class="bt" title="Blood group {{ g }}">{{ g|replace('-','−') }}</span>{% else %}<span class="pill grey">Unknown</span>{% endif %}{%- endmacro %}
 
-{% macro time(v, rel=false, date=false) -%}{% if v %}<time datetime="{{ v|iso }}" {% if rel %}data-rel="1"{% endif %} {% if date %}data-date="1"{% endif %}>{{ v|dt('%b %d, %Y' if date else '%b %d, %H:%M') }}</time>{% endif %}{%- endmacro %}
+{% macro time(v, rel=false, date=false) -%}{% if v %}<time datetime="{{ v|iso }}" {% if rel %}data-rel="1"{% endif %} {% if date %}data-date="1"{% endif %}>{{ v|dt('%b %-d, %Y' if date else '%b %-d, %Y, %H:%M') }}</time>{% endif %}{%- endmacro %}
 
 {% macro empty(text, ic='inbox') -%}<div class="empty"><svg viewBox="0 0 24 24" aria-hidden="true">{{ {'inbox':'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/>'}[ic]|safe }}</svg><p>{{ text }}</p></div>{%- endmacro %}
 
 {% macro csrf_field() -%}<input type="hidden" name="_csrf" value="{{ csrf() }}">{%- endmacro %}
+
+{% macro shown_note(shown, total, noun='rows') -%}{% if shown is not none and total is not none and total > shown %}<p class="muted" role="status" style="margin-top:12px">Showing {{ shown }} of {{ total }} {{ noun }}. Narrow the search to see the rest.</p>{% endif %}{%- endmacro %}

@@ -1,18 +1,21 @@
 {% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}My donations{% endblock %}{% block crumb %}Donor · {{ h.donor_code }}{% endblock %}
 {% block content %}
-{% set s = h.status %}
-{% set tone = 'green' if s == 'Eligible' else ('amber' if ('Screening' in s or 'Complete' in s) else 'red') %}
+{% set b = h.banner %}{% set is_elig = (b.state == 'eligible') %}
+{% set type_names = {'WB':'Whole blood','PLS':'Plasma','PLT':'Platelets'} %}
+{% set lt = h.get('last_donation_type') %}
 <div class="page-head"><div><h1>Hello, {{ user.first_name }}</h1><p>Here is where you stand today.</p></div>
- <div class="actions">{% if 'Complete' in s or 'older' in s %}<a class="btn red" href="{{ url_for('donor_screening') }}">Complete screening</a>{% endif %}</div></div>
+ <div class="actions">{% if b.state == 'screen' %}<a class="btn red" href="{{ url_for('donor_screening') }}">Complete screening</a>{% endif %}</div></div>
 
 <div class="card hero-card"><div class="row" style="align-items:center;gap:28px">
  <div class="ring" data-p="{{ h.ring }}"><svg viewBox="0 0 120 120" role="img" aria-label="{{ h.ring }} percent of the wait until your next donation"><circle class="bg" cx="60" cy="60" r="52"/><circle class="fg" cx="60" cy="60" r="52"/></svg>
-  <div class="in"><div>{% if h.permanent %}<b>—</b><small>deferred</small>{% elif h.days_left %}<b data-count="{{ h.days_left }}">0</b><small>days to go</small>{% else %}<b>Now</b><small>you can give</small>{% endif %}</div></div></div>
+  <div class="in"><div>{% if b.state == 'not_eligible' and h.days_left %}<b data-count="{{ h.days_left }}">0</b><small>days to go</small>{% else %}<b>{{ b.ring_value }}</b><small>{{ b.ring_text }}</small>{% endif %}</div></div></div>
  <div style="display:grid;gap:10px;flex:1;min-width:240px">
-  <div><span class="pill {{ tone }}">{{ s }}</span></div>
-  <h2 style="font-size:1.6rem">{% if h.permanent %}You are permanently deferred{% elif h.days_left %}Next eligible on {{ m.time(h.info.next_eligible_date, date=true) }}{% else %}You are eligible to donate{% endif %}</h2>
-  <p class="muted">{% if h.last_donation %}Your last donation was on {{ m.time(h.last_donation, date=true) }}. Whole blood donors wait {{ h.interval }} days between donations.{% else %}You have not donated yet. Whole blood donors wait {{ h.interval }} days between donations.{% endif %}
+  <div><span class="pill {{ b.tone }}">{{ b.label }}</span></div>
+  <h2 style="font-size:1.6rem">{{ b.headline }}</h2>
+  {% if b.state == 'not_eligible' and b.kind == 'wait' and h.info.next_eligible_date %}<p><b>Next eligible on {{ m.time(h.info.next_eligible_date, date=true) }}.</b> {{ b.reason }}</p>{% elif b.reason %}<p>{{ b.reason }}</p>{% endif %}
+  <p class="muted">{% if h.last_donation %}Your last donation was on {{ m.time(h.last_donation, date=true) }}. {{ type_names.get(lt, 'Whole blood') }} donors wait {{ h.interval }} days between donations.{% else %}You have not donated yet. Whole blood donors wait {{ h.interval }} days between donations.{% endif %}
    {% if h.last_screening %} Last screening: {{ m.time(h.last_screening, rel=true) }}.{% else %} You have not completed a health screening yet.{% endif %}</p>
+  {% if b.kind == 'volume' %}<p class="muted">Height and weight give an estimate of how much blood your body holds ({{ '%.1f' % (h.info.ebv_ml / 1000) }} L for you). Donors need at least {{ '%.1f' % (h.info.min_blood_volume_ml / 1000) }} L so that a donation is safe. <a href="{{ url_for('profile') }}">Update your profile</a> if your height or weight on file is wrong.</p>{% elif b.kind == 'weight' %}<p class="muted"><a href="{{ url_for('profile') }}">Update your weight in Profile</a> if it has changed.</p>{% endif %}
   {% if not h.info.verified %}<p class="muted">Your blood group is self-reported. Staff will confirm it at your first visit before you can be called to donate.</p>{% endif %}
  </div></div></div>
 
@@ -22,21 +25,29 @@
  <div class="card stat red lift"><span class="l">Given so far</span><span class="n"><span data-count="{{ h.litres }}">0</span> L</span><span class="l">enough to help about {{ (h.donations * 3)|int }} patients</span></div>
 </div>
 
-{% if h.deferrals %}<div class="card"><header><h3>Active deferrals</h3></header><div class="grid">
- {% for d in h.deferrals %}<div class="row" style="align-items:center;justify-content:space-between"><span>{{ d.description }}</span>
- <span class="pill {{ 'red' if d.is_permanent else 'amber' }}">{{ 'Permanent' if d.is_permanent else 'Until ' ~ d.end_date.strftime('%b %d, %Y') }}</span></div>{% endfor %}</div></div>{% endif %}
+<div class="card"><header><h2 class="h3">Body size</h2><a href="{{ url_for('profile') }}" class="muted">Edit</a></header>
+ <p>{{ '%g' % (h.info.height_cm|float) }} cm · {{ '%g' % (h.info.weight_kg|float) }} kg · estimated blood volume <b>{{ '%.1f' % (h.info.ebv_ml / 1000) }} L</b></p>
+ <p class="muted">Donors need an estimated blood volume of at least {{ '%.1f' % (h.info.min_blood_volume_ml / 1000) }} L.</p></div>
+
+{% if h.deferrals %}<div class="card"><header><h2 class="h3">Donation restrictions</h2></header><div class="grid">
+ {% for d in h.deferrals %}<div class="row" style="align-items:center;justify-content:space-between"><span>{% if d.is_permanent %}You are permanently unable to donate. Please speak to the clinic team or Canadian Blood Services.{% else %}{{ d.description }}{% endif %}</span>
+ <span class="pill {{ 'red' if d.is_permanent else 'amber' }}">{{ 'Permanent' if d.is_permanent else ('Until ' ~ d.end_date.strftime('%b %-d, %Y') if d.end_date else 'Until further notice') }}</span></div>{% endfor %}</div></div>{% endif %}
 
 <div class="split">
- <div class="card"><header><h3>Donation history</h3><span class="muted">{{ h.history|length }} donation{{ '' if h.history|length == 1 else 's' }}</span></header>
- {% if h.history %}<div class="tablewrap"><table><thead><tr><th>Date</th><th>Where</th><th>Type</th><th>Units made</th></tr></thead><tbody>
+ <div class="card"><header><h2 class="h3">Donation history</h2><span class="muted">{{ h.history|length }} donation{{ '' if h.history|length == 1 else 's' }}</span></header>
+ {% if h.history %}<div class="tablewrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Where</th><th scope="col">Type</th><th scope="col">Units made</th></tr></thead><tbody>
   {% for d in h.history %}<tr><td>{{ m.time(d[0], date=true) }}</td><td>{{ d[1] }}</td><td>{{ {'WB':'Whole blood','PLS':'Plasma','PLT':'Platelets'}.get(d[2], d[2]) }}</td><td class="mono">{{ d[3] }}</td></tr>{% endfor %}
  </tbody></table></div>{% else %}{{ m.empty('Your donations will appear here after your first visit.') }}{% endif %}</div>
 
- <div class="card"><header><h3>Calls for donors</h3></header>
- {% if h.calls %}<div class="grid">{% for c in h.calls %}<div class="card" style="box-shadow:none;background:var(--surface-2)">
+ <div class="card"><header><h2 class="h3">Calls for donors</h2></header>
+ {% if h.calls %}<div class="grid">{% for c in h.calls %}
+  {% set closed = c[2] in ['Closed','closed','Expired'] or (c|length > 3 and c[3] is sameas true) or c[0] in h.get('closed_call_ids', []) or c[0] in closed_calls|default([]) %}
+  <div class="card" style="box-shadow:none;background:var(--surface-2)">
    <p>{{ c[1] }}</p>
    <div class="row" style="margin-top:12px;align-items:center;justify-content:space-between">
-   {% if c[2] == 'Pending' %}
+   {% if closed and c[2] == 'Pending' %}<p class="muted">This call has closed, thank you. No donation is needed right now.</p>
+   {% elif closed %}{{ m.status(c[2] if c[2] not in ['closed','Expired'] else 'Closed') }}<span class="muted">This call has closed, thank you.</span>
+   {% elif c[2] == 'Pending' %}
     <form method="post" action="{{ url_for('donor_call', call_id=c[0]) }}" class="row">{{ m.csrf_field() }}
      <button class="btn teal sm" name="answer" value="accept">I can help</button><button class="btn ghost sm" name="answer" value="decline">Not now</button></form>
    {% else %}{{ m.status(c[2]) }}{% endif %}</div></div>{% endfor %}</div>

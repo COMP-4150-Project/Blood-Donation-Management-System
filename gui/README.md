@@ -4,9 +4,9 @@ A Flask web app on top of the Step 4 database and `vytal/services.py`. It has th
 
 | Role | Screens |
 |---|---|
-| Donor | My donations (eligibility ring, next eligible date, history, donation calls), health screening, notifications, profile |
+| Donor | My donations (eligibility ring, next eligible date, history, donation calls, body size with estimated blood volume), health screening, notifications, profile (contact details, height, weight) |
 | Hospital staff | Dashboard (stock matrix, low-stock alerts, request queue), requests (create, reserve, call donors, issue, cancel), inventory (discard, minimums), donors (screen, verify group, record donation, defer), test results, find donors |
-| Admin | Overview, accounts (create, deactivate, reset password), facilities (add, edit, deactivate, minimums), clinical rules (compatibility, shelf life, intervals, eligibility, deferral reasons), audit log with CSV, lookback trace and quarantine, expiry job |
+| Admin | Overview, accounts (create, deactivate, reset password), facilities (add, edit, deactivate, minimums), clinical rules (compatibility, shelf life, intervals, eligibility minimums for age, weight, hemoglobin and estimated blood volume, deferral reasons), audit log with CSV, lookback trace and quarantine, expiry job |
 
 **Run:** build the database (`./setup.sh`), then `PGDATABASE=vytal ./run_gui.sh` and open http://127.0.0.1:5050. Demo accounts all use `Vytal-demo-2026`: `liam.tremblay@mail.ca` (donor), `m.ross@riverside.example.ca` (staff), `admin@vytal.example.ca` (admin).
 

@@ -43,7 +43,8 @@ BEGIN
     SELECT * INTO s FROM user_session WHERE token_hash = p_token_hash AND ended_at IS NULL FOR UPDATE;
     IF NOT FOUND THEN RETURN; END IF;
     SELECT * INTO a FROM user_account WHERE user_id = s.user_id;
-    IF NOT a.is_active OR now() - s.last_seen_at > session_timeout(a.role) THEN
+    IF NOT a.is_active OR now() - s.last_seen_at > session_timeout(a.role)
+       OR EXISTS (SELECT 1 FROM staff st JOIN facility f USING (facility_id) WHERE st.user_id = a.user_id AND NOT f.is_active) THEN
         UPDATE user_session SET ended_at = now() WHERE session_id = s.session_id;
         RETURN;
     END IF;

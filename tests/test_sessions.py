@@ -104,7 +104,7 @@ def backend_db():
 def test_backend_sign_in_stores_only_the_hash_and_signs_out(backend_db, monkeypatch):
     monkeypatch.setenv("PGDATABASE", backend_db)
     monkeypatch.setenv("PGOPTIONS", "-c role=vytal_app")
-    uid = svc.register_donor("sess@v.ca", "correct-horse-42", "S", "E", None, dt.date(1990, 1, 1), "F", 60, "1 St")
+    uid = svc.register_donor("sess@v.ca", "correct-horse-42", "S", "E", None, dt.date(1990, 1, 1), "F", 60, 165, "1 St")
     token, user_id, role = svc.sign_in("sess@v.ca", "correct-horse-42")
     assert (user_id, role) == (uid, "Donor")
     assert svc.session_user(token) == (uid, "Donor")

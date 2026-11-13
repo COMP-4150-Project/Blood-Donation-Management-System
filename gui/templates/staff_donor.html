@@ -3,41 +3,48 @@
 {% set s = d.status %}{% set tone = 'green' if s == 'Eligible' else ('amber' if ('Screening' in s or 'Complete' in s) else 'red') %}
 <div class="page-head"><div><div class="row" style="align-items:center;gap:10px;margin-bottom:8px"><span class="pill {{ tone }}">{{ s }}</span>{% if d.is_flagged %}<span class="pill red">Flagged</span>{% endif %}</div>
  <h1>{{ d.first_name }} {{ d.last_name }} <span class="mono muted" style="font-size:1rem">{{ d.donor_code }}</span></h1>
- <p>{{ d.age }} years · {{ 'Female' if d.sex == 'F' else 'Male' }} · {{ d.weight_kg }} kg</p></div><a class="btn ghost" href="{{ url_for('staff_donors') }}">All donors</a></div>
+ <p>{{ d.age }} years · {{ 'Female' if d.sex == 'F' else 'Male' }} · {{ '%g' % (d.height_cm|float) }} cm · {{ '%g' % (d.weight_kg|float) }} kg · BMI {{ '%.1f' % (d.weight_kg / ((d.height_cm / 100) ** 2)) }} · est. blood volume {{ '%.1f' % (d.ebv_ml / 1000) }} L</p></div><a class="btn ghost" href="{{ url_for('staff_donors') }}">All donors</a></div>
 
 <div class="grid g3">
- <div class="card"><span class="muted">Blood group</span><div style="margin-top:8px;font-size:1.3rem">{{ m.bt(d.blood_group) }}</div><p class="muted" style="margin-top:8px">{{ 'Verified ' ~ d.verified_at.strftime('%b %d, %Y') if d.group_verified else 'Not verified' }}</p></div>
+ <div class="card"><span class="muted">Blood group</span><div style="margin-top:8px;font-size:1.3rem">{{ m.bt(d.blood_group) }}</div><p class="muted" style="margin-top:8px">{{ 'Verified ' ~ d.verified_at.strftime('%b %-d, %Y') if (d.group_verified and d.verified_at) else ('Verified' if d.group_verified else 'Not verified') }}</p></div>
  <div class="card"><span class="muted">Next eligible</span><div style="margin-top:8px;font-size:1.3rem;font-family:var(--display);font-weight:800">{{ 'Never' if d.permanent else (m.time(d.next_eligible_date, date=true) if d.next_eligible_date else 'Now') }}</div></div>
  <div class="card"><span class="muted">Screening</span><div style="margin-top:8px"><a href="#screen">{{ 'Record a screening' }}</a></div></div>
 </div>
 
 <div class="grid g2">
- <form class="card" method="post" action="{{ url_for('staff_donor_verify', donor_id=d.user_id) }}"><header><h3>Verify blood group</h3></header>{{ m.csrf_field() }}
+ <form class="card" method="post" action="{{ url_for('staff_donor_verify', donor_id=d.user_id) }}"><header><h2 class="h3">Verify blood group</h2></header>{{ m.csrf_field() }}
   <p class="muted" style="margin-bottom:12px">Confirm the group from the lab slip. You are recorded as the verifier.</p>
   <div class="row"><div style="width:160px">{{ m.select('blood_group','Group',GROUPS, value=d.blood_group, blank='Choose') }}</div><button class="btn teal" type="submit">Verify</button></div></form>
- <form class="card" id="screen" method="post" action="{{ url_for('staff_donor_screen', donor_id=d.user_id) }}"><header><h3>Record screening</h3></header>{{ m.csrf_field() }}
-  <div class="grid" style="gap:6px">{% for q in questions %}<fieldset style="border:0;padding:0;margin:0"><legend style="font-size:.9rem;padding-bottom:4px">{{ q.question_text }}</legend><div class="chips">
-   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="yes" required><span>Yes</span></label><label class="chip"><input type="radio" name="q{{ q.question_id }}" value="no"><span>No</span></label></div></fieldset>{% endfor %}</div>
+ <form class="card" id="screen" method="post" action="{{ url_for('staff_donor_screen', donor_id=d.user_id) }}"><header><h2 class="h3">Record screening</h2></header>{{ m.csrf_field() }}
+  {% set ans = answers|default({}) or {} %}{% set miss = [] %}{% set sub = namespace(on=ans|length > 0) %}{% for k in form.keys() %}{% if k[:1] == 'q' and k[1:].isdigit() %}{% set sub.on = true %}{% endif %}{% endfor %}
+  {% if sub.on %}{% for q in questions %}{% if not ('pregnan' in q.question_text|lower and d.sex == 'M') %}{% set a = form.get('q' ~ q.question_id) or ans.get(q.question_id, ans.get(q.question_id|string)) %}{% if a not in ['yes','no'] and a is not sameas true and a is not sameas false %}{% set _ = miss.append(q.question_id) %}{% endif %}{% endif %}{% endfor %}{% endif %}
+  {% if miss %}<div class="ferr" role="alert" style="margin-bottom:8px">Please answer every question. The answers you gave are kept.</div>{% endif %}
+  <div class="grid" style="gap:6px">{% for q in questions %}
+  {% if 'pregnan' in q.question_text|lower and d.sex == 'M' %}<input type="hidden" name="q{{ q.question_id }}" value="no">{% else %}
+  {% set a = form.get('q' ~ q.question_id) or ans.get(q.question_id, ans.get(q.question_id|string)) %}{% set g = 'yes' if (a == 'yes' or a is sameas true) else ('no' if (a == 'no' or a is sameas false) else '') %}
+  <fieldset style="border:0;padding:0;margin:0"><legend style="font-size:.9rem;padding-bottom:4px">{{ q.question_text }}</legend><div class="chips">
+   <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="yes" required {% if g == 'yes' %}checked{% endif %}><span>Yes</span></label><label class="chip"><input type="radio" name="q{{ q.question_id }}" value="no" {% if g == 'no' %}checked{% endif %}><span>No</span></label></div>
+   {% if q.question_id in miss %}<div class="ferr">Please answer this question.</div>{% endif %}</fieldset>{% endif %}{% endfor %}</div>
   <button class="btn teal" type="submit" style="margin-top:14px">Save screening</button></form>
 </div>
 
-<form class="card" id="donate" method="post" action="{{ url_for('staff_donor_donate', donor_id=d.user_id) }}">{{ m.csrf_field() }}<header><h3>Record a donation</h3>{% if not d.can_be_called %}<span class="pill amber">Not currently eligible</span>{% endif %}</header>
+<form class="card" id="donate" method="post" action="{{ url_for('staff_donor_donate', donor_id=d.user_id) }}">{{ m.csrf_field() }}<header><h2 class="h3">Record a donation</h2>{% if not d.can_be_called %}<span class="pill amber">Not currently eligible</span>{% endif %}</header>
  <div class="form-grid">
   {{ m.select('donation_type','Donation type',type_opts, value='WB') }}
-  {{ m.field('volume_ml','Volume (ml)','number', value='450', attrs='min="50" max="1000"') }}
+  {{ m.field('volume_ml','Volume (ml)','number', value='450', attrs='min="50" max="1000" step="1" inputmode="numeric"') }}
   {{ m.field('hemoglobin_gl','Hemoglobin (g/L)','number', hint='Below the minimum records a deferral instead.', attrs='step="0.1" min="50" max="250"') }}
   <div class="field full"><span class="lbl">Components to separate</span><div class="chips">{% for c, n in COMPONENTS %}<label class="chip"><input type="checkbox" name="components" value="{{ c }}" {% if c == 'RBC' %}checked{% endif %}><span>{{ n }}</span></label>{% endfor %}</div>
    {% if ferrs.components %}<div class="ferr" role="alert">{{ ferrs.components }}</div>{% endif %}</div></div>
  <button class="btn red" type="submit" style="margin-top:14px">Record donation</button></form>
 
 <div class="split">
- <div class="card"><header><h3>Donation history</h3></header>{% if donations %}<div class="tablewrap"><table><thead><tr><th>Date</th><th>Facility</th><th>Type</th><th>Hb</th><th>Units</th></tr></thead><tbody>
+ <div class="card"><header><h2 class="h3">Donation history</h2></header>{% if donations %}<div class="tablewrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Facility</th><th scope="col">Type</th><th scope="col">Hb</th><th scope="col">Units</th></tr></thead><tbody>
   {% for x in donations %}<tr><td>{{ m.time(x.donated_at, date=true) }}</td><td>{{ x.facility }}</td><td>{{ x.donation_type_code }}</td><td class="mono">{{ x.hemoglobin_gl }}</td><td class="mono">{{ x.units }}</td></tr>{% endfor %}</tbody></table></div>{% else %}{{ m.empty('No donations yet.') }}{% endif %}</div>
- <div class="card"><header><h3>Deferrals</h3></header>
-  {% if deferrals %}<div class="grid" style="gap:8px">{% for x in deferrals %}<div class="row" style="justify-content:space-between;align-items:center"><span>{{ x.description }}</span><span class="pill {{ 'red' if x.is_permanent else 'grey' }}">{{ 'Permanent' if x.is_permanent else (x.start_date.strftime('%b %d') ~ ' to ' ~ x.end_date.strftime('%b %d')) }}</span></div>{% endfor %}</div>{% else %}<p class="muted">No deferrals on record.</p>{% endif %}
+ <div class="card"><header><h2 class="h3">Deferrals</h2></header>
+  {% if deferrals %}<div class="grid" style="gap:8px">{% for x in deferrals %}<div class="row" style="justify-content:space-between;align-items:center"><span>{{ x.description }}</span><span class="pill {{ 'red' if x.is_permanent else 'grey' }}">{{ 'Permanent' if x.is_permanent else (x.start_date.strftime('%b %-d') ~ ' to ' ~ x.end_date.strftime('%b %-d')) }}</span></div>{% endfor %}</div>{% else %}<p class="muted">No deferrals on record.</p>{% endif %}
   <form method="post" action="{{ url_for('staff_donor_defer', donor_id=d.user_id) }}" style="margin-top:18px;display:grid;gap:12px" class="card" >{{ m.csrf_field() }}
    {{ m.select('reason','Defer for',reason_opts, blank='Choose a reason') }}
-   {{ m.field('end_date','End date','date', required=false, hint='Leave blank to use the reason\'s default length.') }}
+   {{ m.field('end_date','End date','date', required=false, attrs='min="1900-01-01" max="2100-12-31"', hint='Leave blank to use the reason\'s default length.') }}
    <button class="btn danger" type="submit" data-confirm="This donor will be blocked from donating until the deferral ends." data-title="Defer donor?" data-go="Defer donor">Record deferral</button></form></div>
 </div>
 {% endblock %}

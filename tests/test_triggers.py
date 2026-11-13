@@ -213,14 +213,14 @@ def test_temp_table_cannot_shadow_the_audit_log(db):
     db.q("CREATE TEMP TABLE audit_log (audit_id bigint, user_id int, action text, table_name text, record_id text, "
          "field_name text, old_value text, new_value text, changed_at timestamptz)")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(d),))
-    db.q("CALL update_donor_profile(%s, NULL, %s, NULL, 80)", (d, email))
+    db.q("CALL update_donor_profile(%s, NULL, %s, NULL, 80, 178)", (d, email))
     assert db.one("SELECT count(*) FROM pg_temp.audit_log") == 0
     db.q("RESET ROLE")
     assert db.one("SELECT count(*) FROM vytal.audit_log WHERE record_id=%s AND field_name='weight_kg'", (str(d),)) == 1
 
 
 def test_disjoint_specialization(db):
-    assert "role" in db.fails("INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg) VALUES (%s,'X','1990-01-01','M',70)", (db.nurse,))
+    assert "role" in db.fails("INSERT INTO donor (user_id,donor_code,date_of_birth,sex,weight_kg,height_cm) VALUES (%s,'X','1990-01-01','M',70,178)", (db.nurse,))
     assert "role" in db.fails("INSERT INTO admin VALUES (%s)", (db.nurse,))
 
 

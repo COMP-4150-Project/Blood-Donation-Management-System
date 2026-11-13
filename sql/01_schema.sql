@@ -17,7 +17,8 @@ CREATE TABLE user_account (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id),
     CHECK (role IN ('Donor','Staff','Admin')),
-    CHECK (failed_logins >= 0)
+    CHECK (failed_logins >= 0),
+    CHECK (btrim(first_name) <> '' AND btrim(last_name) <> '')
 );
 CREATE TABLE donor (
     user_id INT NOT NULL,
@@ -25,6 +26,7 @@ CREATE TABLE donor (
     date_of_birth DATE NOT NULL,
     sex CHAR(1) NOT NULL,
     weight_kg NUMERIC(5,1) NOT NULL,
+    height_cm NUMERIC(4,1) NOT NULL,
     address VARCHAR(255),
     blood_group VARCHAR(3),
     verified_by INT,
@@ -32,7 +34,8 @@ CREATE TABLE donor (
     is_flagged BOOLEAN NOT NULL DEFAULT FALSE,
     next_eligible_date DATE,
     PRIMARY KEY (user_id),
-    CHECK (weight_kg > 0),
+    CHECK (weight_kg > 0 AND weight_kg <= 500),      -- NaN sorts above every number, so the upper bound refuses it
+    CHECK (height_cm BETWEEN 100 AND 250),           -- same for NaN here; height and weight give the estimated blood volume
     CHECK ((verified_by IS NULL) = (verified_at IS NULL)),
     CHECK (verified_by IS NULL OR blood_group IS NOT NULL)
 );
@@ -55,7 +58,9 @@ CREATE TABLE facility (
     email VARCHAR(255),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (facility_id),
-    CHECK (facility_type IN ('Hospital','Blood Bank'))
+    CHECK (facility_type IN ('Hospital','Blood Bank')),
+    CHECK (btrim(name) <> '' AND btrim(address) <> ''),
+    CHECK (phone IS NULL OR phone ~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$')
 );
 CREATE TABLE blood_group (
     blood_group VARCHAR(3) NOT NULL,
@@ -71,7 +76,7 @@ CREATE TABLE component_type (
     name VARCHAR(40) NOT NULL UNIQUE,
     shelf_life_days INT NOT NULL,
     PRIMARY KEY (component_code),
-    CHECK (shelf_life_days > 0)
+    CHECK (shelf_life_days > 0 AND shelf_life_days <= 1095)
 );
 CREATE TABLE compatibility (
     component_code VARCHAR(10) NOT NULL,
@@ -90,18 +95,20 @@ CREATE TABLE donation_interval (
     interval_days INT NOT NULL,
     PRIMARY KEY (donation_type_code, sex),
     CHECK (sex IN ('M','F')),
-    CHECK (interval_days > 0)
+    CHECK (interval_days > 0 AND interval_days <= 365)
 );
 CREATE TABLE eligibility_rule (
     sex CHAR(1) NOT NULL,
     min_age_years INT NOT NULL,
     min_weight_kg NUMERIC(5,1) NOT NULL,
     min_hemoglobin_gl NUMERIC(4,1) NOT NULL,
+    min_blood_volume_ml INTEGER NOT NULL DEFAULT 3000,   -- per sex, admin-editable like min_weight_kg
     PRIMARY KEY (sex),
     CHECK (sex IN ('M','F')),
     CHECK (min_age_years > 0),
-    CHECK (min_weight_kg > 0),
-    CHECK (min_hemoglobin_gl > 0)
+    CHECK (min_weight_kg > 0 AND min_weight_kg <= 500),
+    CHECK (min_hemoglobin_gl > 0 AND min_hemoglobin_gl <= 250),
+    CHECK (min_blood_volume_ml BETWEEN 1500 AND 6000)
 );
 CREATE TABLE deferral_reason (
     reason_code VARCHAR(10) NOT NULL,
@@ -109,7 +116,7 @@ CREATE TABLE deferral_reason (
     is_permanent BOOLEAN NOT NULL,
     default_days INT,
     PRIMARY KEY (reason_code),
-    CHECK ((is_permanent AND default_days IS NULL) OR (NOT is_permanent AND default_days > 0))
+    CHECK ((is_permanent AND default_days IS NULL) OR (NOT is_permanent AND default_days > 0 AND default_days <= 3650))
 );
 CREATE TABLE test_type (
     test_code VARCHAR(10) NOT NULL,
@@ -161,8 +168,8 @@ CREATE TABLE donation (
     hemoglobin_gl NUMERIC(4,1) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'Awaiting separation',
     PRIMARY KEY (donation_id),
-    CHECK (volume_ml > 0),
-    CHECK (hemoglobin_gl > 0),
+    CHECK (volume_ml > 0 AND volume_ml <= 1000),
+    CHECK (hemoglobin_gl > 0 AND hemoglobin_gl <= 250),     -- NaN sorts above every number, so the upper bound refuses it
     CHECK (status IN ('Awaiting separation','Separated','Discarded'))
 );
 CREATE TABLE test_result (
@@ -200,7 +207,7 @@ CREATE TABLE stock_threshold (
     component_code VARCHAR(10) NOT NULL,
     min_units INT NOT NULL,
     PRIMARY KEY (facility_id, blood_group, component_code),
-    CHECK (min_units >= 0)
+    CHECK (min_units >= 0 AND min_units <= 1000)
 );
 CREATE TABLE stock_alert (
     alert_id SERIAL NOT NULL,
@@ -226,7 +233,8 @@ CREATE TABLE blood_request (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at TIMESTAMPTZ,
     PRIMARY KEY (request_id),
-    CHECK (units_requested > 0),
+    CHECK (units_requested > 0 AND units_requested <= 50),
+    CHECK (btrim(patient_ref) <> ''),
     CHECK (urgency IN ('Emergency','Urgent','Routine')),
     CHECK (status IN ('Open','Fulfilled','Partially Fulfilled','Cancelled'))
 );

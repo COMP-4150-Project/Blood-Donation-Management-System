@@ -9,17 +9,17 @@
  <div class="card stat lift"><span class="l">Expired this month</span><span class="n" data-count="{{ stats.expired_this_month }}">0</span><span class="l">units wasted</span></div>
 </div>
 <div class="split">
- <div class="card"><header><h3>Units wasted by month</h3></header>
+ <div class="card"><header><h2 class="h3">Units wasted by month</h2></header>
   {% if wastage %}{% set mx = (wastage|map(attribute='wasted')|max) or 1 %}<div class="spark" role="img" aria-label="Wasted units by month">{% for w in wastage %}<div><span class="mono" style="color:var(--ink)">{{ w.wasted }}</span><i style="--k:{{ (w.wasted / mx)|round(3) }};--i:{{ loop.index0 }}"></i><span>{{ w.label }}</span></div>{% endfor %}</div>
   {% else %}{{ m.empty('No wastage recorded.') }}{% endif %}</div>
- <div class="card"><header><h3>Accounts</h3><a href="{{ url_for('admin_users') }}">Manage</a></header><div class="grid" style="gap:12px">
+ <div class="card"><header><h2 class="h3">Accounts</h2><a href="{{ url_for('admin_users') }}">Manage</a></header><div class="grid" style="gap:12px">
   {% for u in users %}<div><div class="row" style="justify-content:space-between"><span>{{ u.role }}</span><span class="mono">{{ u.active }} active / {{ u.total }}</span></div><div class="bar teal" style="margin-top:6px"><i data-w="{{ (u.active * 100 // u.total) if u.total else 0 }}"></i></div></div>{% endfor %}</div></div>
 </div>
 <div class="split">
- <div class="card"><header><h3>Open requests</h3></header>{% if requests %}<div class="tablewrap"><table><thead><tr><th>Facility</th><th>Group</th><th>Need</th><th>Urgency</th><th>By</th></tr></thead><tbody>
+ <div class="card"><header><h2 class="h3">Open requests</h2></header>{% if requests %}<div class="tablewrap"><table><thead><tr><th scope="col">Facility</th><th scope="col">Group</th><th scope="col">Need</th><th scope="col">Urgency</th><th scope="col">By</th></tr></thead><tbody>
   {% for r in requests %}<tr><td>{{ r.facility }}</td><td>{{ m.bt(r.recipient_group) }}</td><td>{{ r.units_requested }} × {{ r.component_code|comp }}</td><td>{{ m.urgency(r.urgency) }}</td><td class="nowrap">{{ m.time(r.required_by, rel=true) }}</td></tr>{% endfor %}</tbody></table></div>{% else %}{{ m.empty('No open requests.') }}{% endif %}</div>
- <div class="card"><header><h3>Low stock alerts</h3></header>{% if alerts %}<div class="grid" style="gap:8px">{% for a in alerts %}<div class="row" style="justify-content:space-between;align-items:center"><span>{{ a.facility }}</span><span>{{ m.bt(a.blood_group) }} {{ a.component_code|comp }}</span></div>{% endfor %}</div>{% else %}{{ m.empty('All stock is at or above minimums.') }}{% endif %}</div>
+ <div class="card"><header><h2 class="h3">Low stock alerts</h2></header>{% if alerts %}<div class="grid" style="gap:8px">{% for a in alerts %}<div class="row" style="justify-content:space-between;align-items:center"><span>{{ a.facility }}</span><span>{{ m.bt(a.blood_group) }} {{ a.component_code|comp }}</span></div>{% endfor %}</div>{% else %}{{ m.empty('All stock is at or above minimums.') }}{% endif %}</div>
 </div>
-<div class="card"><header><h3>Recent activity</h3><a href="{{ url_for('admin_audit') }}">Open audit log</a></header>
+<div class="card"><header><h2 class="h3">Recent activity</h2><a href="{{ url_for('admin_audit') }}">Open audit log</a></header>
 {% if audit %}<div class="timeline">{% for a in audit %}<div class="tl"><i></i><div><b>{{ a[3] }}</b> on <span class="mono">{{ a[4] }}</span> <span class="mono muted">#{{ a[5] }}</span>{% if a[6] %} · {{ a[6] }}: <span class="muted">{{ a[7] if a[7] is not none else '∅' }} → {{ a[8] if a[8] is not none else '∅' }}</span>{% endif %}<div class="t">{{ m.time(a[1], rel=true) }}{% if a[2] %} · user {{ a[2] }}{% endif %}</div></div></div>{% endfor %}</div>{% else %}{{ m.empty('Nothing logged yet.') }}{% endif %}</div>
 {% endblock %}
