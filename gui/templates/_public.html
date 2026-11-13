@@ -1,0 +1,19 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}
+{% block shell %}
+<div class="public">
+ <section class="art dark-surface">
+  <span class="drop a"></span><span class="drop b"></span>
+  <div style="position:relative;z-index:1">{{ m.logo('2.8rem') }}</div>
+  <div style="position:relative;z-index:1;display:grid;gap:16px">
+   <h1>Blood where it is needed, when it is needed.</h1>
+   <p>Vytal connects donors, hospitals and blood banks. Donors see when they can give next. Hospitals see what is on the shelf and who can help.</p>
+  </div>
+  <div class="feat">
+   <div style="animation-delay:.2s"><b>Eligibility, clearly</b><span>Next donation date on the first screen.</span></div>
+   <div style="animation-delay:.3s"><b>Stock you can trust</b><span>Units tracked from bag to bedside.</span></div>
+   <div style="animation-delay:.4s"><b>Matched by blood group</b><span>Compatible and eligible donors only.</span></div>
+  </div>
+ </section>
+ <section class="panel" id="main"><div class="card">{% block panel %}{% endblock %}</div></section>
+</div>
+{% endblock %}

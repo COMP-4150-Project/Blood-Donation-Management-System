@@ -1,0 +1,8 @@
+{% extends '_public.html' %}{% import 'macros.html' as m with context %}{% block title %}Welcome{% endblock %}
+{% block panel %}
+<div style="display:grid;gap:18px">
+ <div><h2>Welcome to Vytal</h2><p class="muted" style="margin-top:6px">Sign in to your donor, hospital or admin account, or register as a new donor.</p></div>
+ <a class="btn red block" href="{{ url_for('login') }}">Sign in</a>
+ <a class="btn ghost block" href="{{ url_for('register') }}">Register as a donor</a>
+</div>
+{% endblock %}

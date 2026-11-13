@@ -1,0 +1,28 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Profile{% endblock %}{% block crumb %}Account{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ p.first_name }} {{ p.last_name }}</h1><p>{{ p.role }} account</p></div></div>
+<div class="grid g2">
+ <form class="card" method="post" action="{{ url_for('profile') }}" style="display:grid;gap:14px" novalidate>
+  {{ m.csrf_field() }}<header><h3>{{ 'Contact details' if p.role == 'Donor' else 'Your details' }}</h3></header>
+  {% if p.role == 'Donor' %}
+   <div class="form-grid">{{ m.field('email','Email','email', value=p.email) }}{{ m.field('phone','Phone','tel', value=p.phone, required=false) }}
+   <div class="full">{{ m.field('address','Address', value=p.address) }}</div>
+   {{ m.field('weight_kg','Weight (kg)','number', value=p.weight_kg, attrs='min="20" max="300" step="0.1"') }}
+   <div class="field"><label>Date of birth</label><input value="{{ p.date_of_birth.strftime('%b %d, %Y') }}" disabled></div></div>
+   <button class="btn red" type="submit">Save changes</button>
+  {% else %}
+   <dl style="display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:0"><dt class="muted">Email</dt><dd style="margin:0">{{ p.email }}</dd><dt class="muted">Phone</dt><dd style="margin:0">{{ p.phone or '—' }}</dd>
+   {% if user.facility %}<dt class="muted">Facility</dt><dd style="margin:0">{{ user.facility.name }}</dd>{% endif %}</dl>
+   <p class="muted">Staff and admin contact details are changed by an administrator.</p>
+  {% endif %}
+ </form>
+ <form class="card" method="post" action="{{ url_for('password') }}" style="display:grid;gap:14px" novalidate>
+  {{ m.csrf_field() }}<header><h3>Change password</h3></header>
+  {{ m.field('old_password','Current password','password', attrs='autocomplete="current-password"') }}
+  {{ m.field('new_password','New password','password', hint='At least 10 characters.', attrs='autocomplete="new-password"') }}
+  {{ m.field('confirm','Repeat new password','password', attrs='autocomplete="new-password"') }}
+  <button class="btn teal" type="submit">Change password</button>
+  <p class="muted">You will be signed out everywhere and asked to sign in again.</p>
+ </form>
+</div>
+{% endblock %}
