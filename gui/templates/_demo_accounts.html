@@ -1,0 +1,19 @@
+{% if demo_accounts %}
+<section class="demo-all" aria-label="Demo accounts">
+ <h3>Demo accounts</h3>
+ <p class="muted">This is a public demo with made-up data. Every account uses the password <code>{{ demo_password }}</code>. {% if clickable %}Click a row to fill the sign-in form.{% else %}Use them on the <a href="{{ url_for('login') }}">sign-in page</a>. Your new donor account will also work after you register.{% endif %}</p>
+ {% for role in ['Admin','Staff','Donor'] %}
+ <details {% if role != 'Donor' %}open{% endif %}>
+  <summary>{{ role }} accounts ({{ demo_accounts|selectattr('role','equalto',role)|list|length }})</summary>
+  <table>
+   <thead><tr><th>Username (email)</th><th>Password</th><th>Name</th>{% if role == 'Staff' %}<th>Facility</th>{% endif %}</tr></thead>
+   <tbody>
+   {% for a in demo_accounts if a.role == role %}
+    <tr {% if clickable %}data-demo="{{ a.email }}" tabindex="0"{% endif %}><td><code>{{ a.email }}</code></td><td><code>{{ demo_password }}</code></td><td>{{ a.name }}</td>{% if role == 'Staff' %}<td>{{ a.note }}</td>{% endif %}</tr>
+   {% endfor %}
+   </tbody>
+  </table>
+ </details>
+ {% endfor %}
+</section>
+{% endif %}
