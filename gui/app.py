@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 from datetime import timezone
+from pathlib import Path
 
 import psycopg
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_template, request, session as web,
@@ -79,9 +80,28 @@ def _guard():
                 return redirect(url_for("login"))
 
 
+DEMO_PASSWORD = "Vytal-demo-2026"
+
+
+def _demo_accounts():
+    """Hosted demo only (VYTAL_DEMO=1): every sample account, read from sql/07_sample_data.sql, for the sign-in and sign-up pages."""
+    if not os.environ.get("VYTAL_DEMO"):
+        return []
+    sql = (Path(__file__).resolve().parent.parent / "sql" / "07_sample_data.sql").read_text(encoding="utf8")
+    fac = {int(i): n for i, n in re.findall(r"\((\d+), '([^']+)', '(?:Hospital|Blood Bank)'", sql)}
+    staff_fac = {int(u): fac.get(int(f), "") for u, f in re.findall(r"\((\d+), (\d), '", sql.split("INSERT INTO staff", 1)[1].split(";", 1)[0])}
+    rows = re.findall(r"\(\s*(\d+),\s*'([^']+@[^']+)',\s*:'pw',\s*'([^']*)',\s*'([^']*)',\s*'[^']*',\s*'(Admin|Staff|Donor)'", sql)
+    order = {"Admin": 0, "Staff": 1, "Donor": 2}
+    out = [{"role": r, "email": e, "name": f"{fn} {ln}", "note": staff_fac.get(int(i), "")} for i, e, fn, ln, r in rows]
+    return sorted(out, key=lambda a: order[a["role"]])
+
+
+DEMO_ACCOUNTS = _demo_accounts()
+
+
 @app.context_processor
 def _ctx():
-    return {"csrf": csrf_token, "user": g.get("user"), "form": web.pop("form", {}), "ferrs": web.pop("ferrs", {}),
+    return {"demo_accounts": DEMO_ACCOUNTS, "demo_password": DEMO_PASSWORD, "csrf": csrf_token, "user": g.get("user"), "form": web.pop("form", {}), "ferrs": web.pop("ferrs", {}),
             "GROUPS": GROUPS, "COMPONENTS": reads.COMPONENTS, "now": dt.datetime.now(timezone.utc)}
 
 

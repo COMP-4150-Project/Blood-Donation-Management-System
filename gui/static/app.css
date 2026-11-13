@@ -204,3 +204,8 @@ dialog[open] .sheet{animation:sheet .38s var(--ease) both}.sheet{background:var(
 @media(max-width:560px){.nav a span.t{display:none}.nav a{padding:10px}.page-head{align-items:flex-start}}
 @media print{.side,.top,.toasts,.actions{display:none!important}.app{display:block}.card{box-shadow:none;break-inside:avoid}}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+.demo-all{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;display:grid;gap:10px}.demo-all h3{margin:0}
+.demo-all summary{cursor:pointer;font-weight:600;padding:6px 0}.demo-all table{width:100%;border-collapse:collapse;font-size:.82rem;margin:6px 0 10px}
+.demo-all th{text-align:left;color:var(--muted);font-weight:600;padding:4px 8px}.demo-all td{padding:6px 8px;border-top:1px solid var(--line)}
+.demo-all tbody tr{cursor:pointer}.demo-all tbody tr:hover,.demo-all tbody tr:focus{background:var(--surface-2);outline:none}
+.demo-all code{font-size:.8rem;word-break:break-all}
