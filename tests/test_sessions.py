@@ -113,9 +113,9 @@ def test_backend_sign_in_stores_only_the_hash_and_signs_out(backend_db, monkeypa
         owner.execute("UPDATE vytal.user_session SET created_at = created_at - interval '31 minutes', "
                       "last_seen_at = last_seen_at - interval '31 minutes' WHERE user_id = %s", (uid,))
     assert stored != token and stored == token_hash(token)
-    with pytest.raises(svc.AccessDenied, match="session expired"):
+    with pytest.raises(svc.AccessDenied, match="session has expired"):
         svc.session_user(token)
     token2, _, _ = svc.sign_in("sess@v.ca", "correct-horse-42")
     svc.sign_out(token2)
-    with pytest.raises(svc.AccessDenied, match="session expired"):
+    with pytest.raises(svc.AccessDenied, match="session has expired"):
         svc.session_user(token2)

@@ -71,7 +71,7 @@ def test_donor_journey_from_registration_to_transfusion(world):
     assert (req["reserved"], req["shortfall"]) == (1, 0)
     assert svc.close_request(s, req["request_id"]) == "Fulfilled"
     home = svc.donor_home(donor)
-    assert home["status"] == f"Not eligible until {dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=56)}"
+    assert home["status"] == f"Not eligible until {svc.clinic_today() + dt.timedelta(days=56)}"     # BR-02 on the clinic's day
     assert [(f, t, n) for _, f, t, n in home["history"]] == [("Windsor General", "WB", len(units))]
 
 
@@ -127,7 +127,7 @@ def test_emergency_shortfall_triggers_a_donation_call(world):
     codes = [c for c, *_ in svc.find_donors(w, req["request_id"])]
     assert svc.donor_home(called)["donor_code"] in codes
     call = svc.call_donors(w, req["request_id"], codes)
-    assert svc.respond_to_call(called, call, True) == "Windsor General, 1 St"            # UC-20: facility details on accept
+    assert svc.respond_to_call(called, call, True) == "Thank you. Please come to Windsor General, 1 St."   # UC-20: where to go
     msg = "Windsor General is asking for donors to give red blood cells. Please book a donation at 1 St. " \
           "Accept or decline this call in Vytal."                                          # SE-07 fixed template only
     assert (call, msg, "Accepted") in svc.donor_home(called)["calls"]
@@ -205,7 +205,7 @@ def test_fifty_concurrent_requests_never_share_a_unit(world):
     with owner(world) as con:                    # O- patients can only take O- red cells
         stock = con.execute("SELECT count(*) FROM vytal.v_blood_unit WHERE blood_group='O-' AND component_code='RBC' "
                             "AND status='Available'").fetchone()[0]
-    assert stock >= 30
+    assert stock >= 20             # open requests left by earlier tests may take some of the pool as it is released (C15)
     barrier, results, errors = threading.Barrier(50), [], []
 
     def worker(i):
@@ -251,7 +251,7 @@ def test_donor_completes_their_own_screening(world):
     with pytest.raises(svc.AccessDenied):
         svc.complete_screening(w, CLEAN)
     svc.record_deferral(w, donor, "HIV")
-    with pytest.raises(psycopg.Error, match="permanently deferred"):
+    with pytest.raises(psycopg.Error, match="permanent deferral"):
         svc.complete_screening(donor, CLEAN)
 
 
@@ -343,7 +343,7 @@ def test_lookback_by_unit_id_lists_everything_the_donor_gave(world):
     with owner(world) as con:
         fac = con.execute("SELECT facility_id FROM vytal.staff WHERE user_id=%s", (w,)).fetchone()[0]
     assert {r[5] for r in rows} == {fac}                                       # held_at
-    with pytest.raises(svc.InvalidInput, match="no donor or unit"):
+    with pytest.raises(svc.InvalidInput, match="No donor or unit"):
         svc.lookback(a, unit_id="U0-RBC")
 
 
@@ -406,7 +406,7 @@ def test_quarantine_waits_for_a_concurrent_allocation(world):
 # ---------------------------------------------------------------------- items added for UC-01 2b, UC-18, UC-21, UC-24, UC-25, FR-21, FR-27
 def test_registration_refuses_a_donor_under_17(world):
     teen = dt.date.today().replace(year=dt.date.today().year - 15)
-    with pytest.raises(svc.InvalidInput, match="date_of_birth: donors must be at least 17"):
+    with pytest.raises(svc.InvalidInput, match="date_of_birth: Donors must be at least 17"):
         svc.register_donor("teen@v.ca", PASSWORD, "Tia", "Lam", None, teen, "F", 55, 162, "1 St", "O+")
 
 
@@ -479,14 +479,14 @@ def test_donor_reads_and_marks_notifications(world):
     assert len(unread) == 2
     svc.mark_read(donor, unread[0][0])
     assert len(svc.list_notifications(donor, unread_only=True)) == 1 and len(svc.list_notifications(donor)) == 2
-    with pytest.raises(psycopg.Error, match="not found"):
+    with pytest.raises(svc.InvalidInput, match="notification: The notification was not found"):
         svc.mark_read(world["windsor"], unread[1][0])
 
 
 def test_password_change_and_admin_reset_through_the_backend(world):
     """UC-01 2a: the old password is proved first; an Admin reset clears a lockout; login uses only login_lookup (SE-07)."""
     d = new_donor("pw@v.ca")
-    with pytest.raises(svc.AccessDenied, match="current password is wrong"):
+    with pytest.raises(svc.InvalidInput, match="current_password: The current password is wrong"):   # DON-10: field named
         svc.change_password(d, "not-my-password", "brand-new-pass-1")
     with pytest.raises(svc.InvalidInput, match="password"):
         svc.change_password(d, PASSWORD, "short")
@@ -573,15 +573,15 @@ def test_backend_refuses_blank_and_absurd_input(world):
     a, w = world["admin"], world["windsor"]
     with owner(world) as con:
         fac = con.execute("SELECT facility_id FROM vytal.staff WHERE user_id=%s", (w,)).fetchone()[0]
-    with pytest.raises(svc.InvalidInput, match="name: the facility name is required"):
+    with pytest.raises(svc.InvalidInput, match="name: The facility name is required"):
         svc.save_facility(a, None, "   ", "Hospital", "1 St")
-    with pytest.raises(svc.InvalidInput, match="address: the facility address is required"):
+    with pytest.raises(svc.InvalidInput, match="address: The facility address is required"):
         svc.save_facility(a, None, "Blank Address Hospital", "Hospital", " ")
     with pytest.raises(svc.InvalidInput, match="phone:"):
         svc.save_facility(a, None, "Bad Phone Hospital", "Hospital", "1 St", "call me")
-    with pytest.raises(svc.InvalidInput, match="first_name: first name is required"):
+    with pytest.raises(svc.InvalidInput, match="first_name: First name is required"):
         svc.create_staff(a, "blank@v.ca", PASSWORD, "  ", "T", fac)
-    with pytest.raises(svc.InvalidInput, match="patient_ref: the patient reference is required"):
+    with pytest.raises(svc.InvalidInput, match="patient_ref: The patient reference is required"):
         svc.submit_request(w, "  ", "O+", "RBC", 1, "Routine", SOON)
     with pytest.raises(svc.InvalidInput, match="units:"):
         svc.submit_request(w, "P-9", "O+", "RBC", 51, "Routine", SOON)
@@ -607,9 +607,9 @@ def test_backend_maps_database_errors_to_plain_messages(world):
     d = new_donor("map@v.ca")
     with pytest.raises(svc.InvalidInput, match="outside the allowed range"):
         svc._call(d, "CALL update_donor_profile(%s,%s,%s,%s,'NaN'::numeric,170)", d, None, "map@v.ca", "1 St")
-    with pytest.raises(svc.InvalidInput, match="email: that email is already registered"):
+    with pytest.raises(svc.InvalidInput, match="email: That email is already registered"):
         new_donor("map@v.ca")
-    with pytest.raises(svc.InvalidInput, match="too long"):
+    with pytest.raises(svc.InvalidInput, match="^first_name: Use at most 50 characters"):     # DA-N3: the column's limit, at the field
         svc.create_admin(world["admin"], "long@v.ca", PASSWORD, "x" * 80, "T")
 
 
@@ -667,7 +667,7 @@ def test_staff_of_a_deactivated_facility_cannot_sign_in_or_work(world):
     svc.set_facility_active(a, fac, False)
     with pytest.raises(svc.AccessDenied, match="facility is deactivated"):
         svc.login("closing@v.ca", PASSWORD)
-    with pytest.raises(svc.AccessDenied, match="session expired"):
+    with pytest.raises(svc.AccessDenied, match="session has expired"):
         svc.session_user(token)
     with pytest.raises(psycopg.Error, match="facility is deactivated"):
         svc.submit_request(s, "Z-1", "O+", "RBC", 1, "Routine", SOON)
@@ -691,12 +691,28 @@ def test_audit_log_is_newest_first_pages_and_includes_the_last_day(world):
     page1 = svc.audit_log(a, table="user_account", limit=2, offset=0)
     page2 = svc.audit_log(a, table="user_account", limit=2, offset=2)
     assert [r[0] for r in page1 + page2] == ids[:4]
-    today = dt.date.today()
+    today = svc.clinic_today()                         # the clinic's day, whatever the hour or the server's zone (C1)
     assert svc.audit_log(a, since=today, until=today)                                   # a plain date covers that whole day
-    midnight = dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc)
-    assert svc.audit_log(a, until=midnight)                                             # as does what a date field sends
     assert svc.audit_log(a, until=dt.date(2000, 1, 1)) == []
     csv_text = svc.audit_csv(a, table="user_account", until=today)
     assert csv_text.splitlines()[0].endswith("user_name,user_email")
+    # C2 / INT-04: late-evening entries in Ontario (already the next day in UTC). Entries at 23:59 the day before, 12:00 and
+    # 23:30 on 14 Jul 2001 (EDT, UTC-4) and 00:30 the day after; a day filter follows the local calendar the screen shows.
+    toronto = svc.CLINIC_TZ
+    at = {k: dt.datetime(2001, 7, d, h, m, tzinfo=toronto) for k, d, h, m in
+          (("eve", 13, 23, 59), ("noon", 14, 12, 0), ("late", 14, 23, 30), ("next", 15, 0, 30))}
+    with owner(world) as con:
+        for k, t in at.items():
+            con.execute("INSERT INTO vytal.audit_log (user_id, action, table_name, record_id, field_name, new_value, changed_at) "
+                        "VALUES (%s, 'UPDATE', 'facility', 'tz-check', 'phone', %s, %s)", (a, k, t))
+    day = dt.date(2001, 7, 14)
+    got = lambda **kw: [r[8] for r in svc.audit_log(a, record_id="tz-check", **kw)]
+    assert got(since=day, until=day) == ["late", "noon"]                                 # 15 Nov to 15 Nov style: one day
+    assert got(until=day) == ["late", "noon", "eve"] and got(since=day + dt.timedelta(days=1)) == ["next"]
+    assert got(since=day, until=at["late"]) == ["noon"]                                  # a datetime is an exact instant
+    with pytest.raises(svc.InvalidInput, match="until: The 'to' date is before the 'from' date"):
+        svc.audit_log(a, since=day, until=day - dt.timedelta(days=1))
+    late_csv = svc.audit_csv(a, record_id="tz-check", since=day, until=day).splitlines()
+    assert len(late_csv) == 3 and "2001-07-14T23:30:00-04:00" in late_csv[1]            # CSV times in clinic time
     with pytest.raises(svc.InvalidInput):
         svc.audit_log(a, limit=-1)

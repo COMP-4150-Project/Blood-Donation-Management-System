@@ -173,7 +173,7 @@ INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, height_cm
     (145, 'D-1060', '1995-11-08', 'F', 67, 160, '245 Ouellette Ave, Windsor, ON', 'O+', 3, now() - interval '200 days' - interval '30 minutes'),
     -- registered but never donated: a new 18-year-old, under 50 kg, group unknown, brand new (an under-17 sign-up is
     -- refused by register_donor, UC-01 2b, so it has no row here)
-    (133, 'D-1048', (CURRENT_DATE - interval '18 years 2 months')::date, 'F', 55, 153, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
+    (133, 'D-1048', (clinic_today() - interval '18 years 2 months')::date, 'F', 55, 153, '233 Ouellette Ave, Windsor, ON', 'A+', NULL, NULL),
     (134, 'D-1049', '2001-04-12', 'M', 47.5, 164, '234 Ouellette Ave, Windsor, ON', 'O+', NULL, NULL),
     -- Aisha is the sample donor who fails the estimated blood volume rule on purpose: 51 kg and 146 cm give about 2.98 L, under the
     -- 3.0 L minimum, although her weight is above the 50 kg limit. (No male donor in this range can fall under 3.0 L at 50 kg or more;
@@ -192,7 +192,7 @@ FROM (VALUES (146, '1986-02-11', 'M', 82, 192, 4, 180), (147, '1990-07-04', 'F',
 -- Scenario 2: Priya is 19 and self-reported B-positive (unverified until her first donation). Scenario 3: Marcus is a regular
 -- O-positive donor at Lakeshore. Unknown groups stay NULL and unverified, so those donors are never called (FR-25).
 INSERT INTO donor (user_id, donor_code, date_of_birth, sex, weight_kg, height_cm, address, blood_group, verified_by, verified_at) VALUES
-    (157, 'D-1072', (CURRENT_DATE - interval '19 years 3 months')::date, 'F', 58, 152, '18 Sunset Ave, Windsor, ON', 'B+', NULL, NULL),
+    (157, 'D-1072', (clinic_today() - interval '19 years 3 months')::date, 'F', 58, 152, '18 Sunset Ave, Windsor, ON', 'B+', NULL, NULL),
     (158, 'D-1073', '1988-04-22', 'M', 84, 184, '57 Lakeshore Blvd, Windsor, ON', 'O+', 7, now() - interval '290 days' - interval '30 minutes'),
     (159, 'D-1074', '1993-08-09', 'M', 80, 193, '920 Erie St E, Windsor, ON', 'O-', 4, now() - interval '18 days' - interval '30 minutes'),
     (160, 'D-1075', '1998-02-17', 'F', 62, 155, '41 Tecumseh Rd W, Windsor, ON', NULL, NULL, NULL),
@@ -438,10 +438,10 @@ UPDATE screening_answer SET answer = TRUE WHERE screening_id = 67 AND question_i
 UPDATE screening_answer SET answer = TRUE WHERE screening_id = 107 AND question_id = 6;
 UPDATE screening_answer SET answer = TRUE WHERE question_id = 1 AND screening_id = (SELECT screening_id FROM screening WHERE donor_id = 157);
 INSERT INTO deferral (donor_id, reason_code, start_date, end_date, screening_id) VALUES
-    (123, 'TRAVEL', (now() - interval '180 days')::date, (now() - interval '180 days')::date + 90, 32),
-    (104, 'UNWELL', (now() - interval '100 days')::date, (now() - interval '100 days')::date + 1, 49),
-    (129, 'TATTOO', (now() - interval '30 days')::date, (now() - interval '30 days')::date + 90, 67),
-    (145, 'PREG', (now() - interval '45 days')::date, (now() - interval '45 days')::date + 180, 107);
+    (123, 'TRAVEL', clinic_date(now() - interval '180 days'), clinic_date(now() - interval '180 days') + 90, 32),
+    (104, 'UNWELL', clinic_date(now() - interval '100 days'), clinic_date(now() - interval '100 days') + 1, 49),
+    (129, 'TATTOO', clinic_date(now() - interval '30 days'), clinic_date(now() - interval '30 days') + 90, 67),
+    (145, 'PREG', clinic_date(now() - interval '45 days'), clinic_date(now() - interval '45 days') + 180, 107);
 -- Scenario 2: Priya's tattoo was six weeks old when she answered, so she is deferred until three months after it
 INSERT INTO deferral (donor_id, reason_code, start_date, end_date, screening_id)
 SELECT 157, 'TATTOO', completed_at::date, completed_at::date + 90, screening_id FROM screening WHERE donor_id = 157;
@@ -526,15 +526,15 @@ UPDATE blood_unit SET status = 'Available' WHERE status = 'Collected' AND donati
 INSERT INTO test_result (donation_id, test_code, result, tested_at)
 SELECT 102, test_code, CASE test_code WHEN 'HIV' THEN 'Positive' ELSE 'Negative' END, now() - interval '120 days' + interval '12 hours'
 FROM test_type;
-INSERT INTO deferral (donor_id, reason_code, start_date, recorded_by) VALUES (144, 'HIV', (now() - interval '119 days')::date, 6);
+INSERT INTO deferral (donor_id, reason_code, start_date, recorded_by) VALUES (144, 'HIV', clinic_date(now() - interval '119 days'), 6);
 
 -- donor D-1042's (user 127) latest donation tests positive for hepatitis B: the trigger discards its units, flags the donor and notifies admins
 INSERT INTO test_result (donation_id, test_code, result, tested_at)
 SELECT 76, test_code, CASE test_code WHEN 'HBV' THEN 'Positive' ELSE 'Negative' END, now() - interval '5 days 12:00' FROM test_type;
-INSERT INTO deferral (donor_id, reason_code, start_date, recorded_by) VALUES (127, 'HBV', (now() - interval '5 days')::date, 3);
+INSERT INTO deferral (donor_id, reason_code, start_date, recorded_by) VALUES (127, 'HBV', clinic_date(now() - interval '5 days'), 3);
 
 -- a staff-recorded deferral: hemoglobin too low at the clinic 10 days ago
-INSERT INTO deferral (donor_id, reason_code, start_date, end_date, recorded_by) VALUES (109, 'LOWHB', (now() - interval '10 days')::date, (now() - interval '10 days')::date + 56, 4);
+INSERT INTO deferral (donor_id, reason_code, start_date, end_date, recorded_by) VALUES (109, 'LOWHB', clinic_date(now() - interval '10 days'), clinic_date(now() - interval '10 days') + 56, 4);
 
 
 -- ---------------------------------------------------------------- past requests (FR-22..28): created, reserved, issued, closed
@@ -561,7 +561,9 @@ INSERT INTO blood_request (request_id, requested_by, patient_ref, recipient_grou
     (19, 6, 'P-24703', 'O+', 'RBC', 1, 'Emergency', now() - interval '45 days' + interval '1 hours', 'Fulfilled', now() - interval '45 days', now() - interval '45 days' + interval '1 hours'),
     (20, 5, 'P-24740', 'A+', 'RBC', 1, 'Routine', now() - interval '30 days' + interval '48 hours', 'Fulfilled', now() - interval '30 days', now() - interval '30 days' + interval '20 hours'),
     (21, 4, 'P-24777', 'O+', 'PLT', 1, 'Urgent', now() - interval '18 days' + interval '6 hours', 'Fulfilled', now() - interval '18 days', now() - interval '18 days' + interval '4 hours'),
-    (22, 5, 'P-24814', 'O-', 'RBC', 1, 'Emergency', now() - interval '14 days' + interval '1 hours', 'Partially Fulfilled', now() - interval '14 days', now() - interval '14 days' + interval '1 hours'),
+    -- no O-negative unit could be found in time, so the request was cancelled with none issued (Partially Fulfilled means
+    -- at least one unit went out)
+    (22, 5, 'P-24814', 'O-', 'RBC', 1, 'Emergency', now() - interval '14 days' + interval '1 hours', 'Cancelled', now() - interval '14 days', now() - interval '14 days' + interval '1 hours'),
     (27, 3, 'P-24851', 'A+', 'PLT', 1, 'Urgent', now() - interval '278 days' + interval '6 hours', 'Fulfilled', now() - interval '278 days', now() - interval '278 days' + interval '4 hours'),
     (28, 4, 'P-24888', 'O+', 'RBC', 1, 'Routine', now() - interval '254 days' + interval '48 hours', 'Fulfilled', now() - interval '254 days', now() - interval '254 days' + interval '20 hours'),
     (29, 5, 'P-24925', 'O-', 'RBC', 1, 'Emergency', now() - interval '189 days' + interval '1 hours', 'Fulfilled', now() - interval '189 days', now() - interval '189 days' + interval '1 hours'),
@@ -657,8 +659,8 @@ FROM (VALUES (1, 103, 'Accepted', 2), (1, 118, 'Accepted', 5), (1, 112, 'Decline
              (2, 148, 'Accepted', 4), (2, 154, 'Declined', 6), (2, 150, 'Declined', 30), (2, 146, 'Pending', 0),
              (2, 141, 'Pending', 0)) AS v(call_id, donor, response, hrs)
 JOIN donation_call c USING (call_id);
-INSERT INTO notification (user_id, message, created_at, read_at)
-SELECT r.donor_id, c.message, c.sent_at, r.responded_at FROM call_recipient r JOIN donation_call c USING (call_id);
+INSERT INTO notification (user_id, message, created_at, read_at, call_id)
+SELECT r.donor_id, c.message, c.sent_at, r.responded_at, c.call_id FROM call_recipient r JOIN donation_call c USING (call_id);
 SELECT setval(pg_get_serial_sequence('vytal.donation_call', 'call_id'), 2);
 
 ALTER TABLE user_account ENABLE TRIGGER audit_user;
@@ -707,10 +709,12 @@ DO $$ DECLARE r int; got int; BEGIN
 END $$;
 
 -- TR-2291 cannot be covered from stock, so Maya calls every eligible O- donor (FR-25, FR-26). As in Scenario 1, two accept
--- for the next morning; two decline and the rest have not answered yet (FR-27)
-DO $$ DECLARE cid int; r text; d int; ok boolean; BEGIN
+-- as soon as they can; two decline and the rest have not answered yet (FR-27)
+DO $$ DECLARE cid int; r text; d int; ok boolean; needed date; BEGIN
     PERFORM set_config('vytal.user_id', '3', true);
-    CALL send_donation_call(23, 3, NULL, CURRENT_DATE + 1, cid);            -- SE-07 template message, for the next morning
+    -- SE-07 template message; the preferred date is the day the request is needed (never after its required_by)
+    SELECT clinic_date(required_by) INTO needed FROM blood_request WHERE request_id = 23;
+    CALL send_donation_call(23, 3, NULL, needed, cid);
     FOR d, ok IN VALUES (118, TRUE), (146, TRUE), (141, FALSE), (147, FALSE) LOOP
         PERFORM set_config('vytal.user_id', d::text, true);               -- UC-20: each donor answers for themselves
         CALL respond_to_call(cid, d, ok, r);
@@ -756,7 +760,7 @@ DO $$ DECLARE rid int; got int; short int; cid int; r text; d int; ok boolean; c
     PERFORM set_config('vytal.user_id', '9', true);
     CALL submit_request(9, 'P-31120', 'O+', 'RBC', 3, 'Urgent', now() + interval '12 hours', rid, got, short);
     codes := ARRAY(SELECT donor_code::text FROM eligible_donors(rid) WHERE blood_group = 'O+' ORDER BY donor_code LIMIT 6);
-    CALL send_donation_call(rid, 9, codes, CURRENT_DATE + 7, cid);
+    CALL send_donation_call(rid, 9, codes, clinic_date(now() + interval '12 hours'), cid);   -- by the day it is needed
     FOR d, ok IN SELECT donor_id, row_number() OVER (ORDER BY donor_id) = 1 FROM call_recipient WHERE call_id = cid
                  ORDER BY donor_id LIMIT 2 LOOP
         PERFORM set_config('vytal.user_id', d::text, true);

@@ -55,7 +55,7 @@
  </aside>
  <div class="main">
   <header class="top"><span class="crumb">{% block crumb %}{{ role }}{% endblock %}</span><span class="grow"></span>
-   <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark theme">{{ m.icon('moon') }}</button>
+   <button class="icon-btn" id="theme" type="button" aria-label="Dark theme" aria-pressed="false" title="Switch to dark theme">{{ m.icon('moon') }}</button>
    <a class="icon-btn" href="{{ url_for('notifications') }}" aria-label="Notifications{% if user.unread %}, {{ user.unread }} unread{% endif %}">{{ m.icon('bell') }}{% if user.unread %}<span class="dot" aria-hidden="true">{{ user.unread }}</span>{% endif %}</a>
   </header>
   <main class="page" id="main" tabindex="-1">{% block content %}{% endblock %}</main>

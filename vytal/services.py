@@ -12,18 +12,36 @@ import math
 import re
 import secrets
 from contextlib import contextmanager
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg import errors as pg
 
 from vytal.auth import MAX_BYTES as MAX_PASSWORD_BYTES, hash_password, verify_password
-from vytal.db import session as _session
+from vytal.db import current_connection, request_scope, session as _session
 from vytal.queries import load
 
 QUERIES = load()
 GROUPS = {"O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+"}
 COMPONENTS = {"RBC", "PLASMA", "PLT"}
 _DUMMY_HASH = hash_password("no-such-account")      # unknown emails cost the same bcrypt time as real ones (SE-05)
+
+# DI-06: times are stored in UTC; a calendar day (BR-02 intervals, deferral ends, audit filters, dates on screen) is the
+# clinic's day in Ontario. The database has the same rule as clinic_tz() / clinic_today().
+CLINIC_TZ = ZoneInfo("America/Toronto")
+MAX_UNITS = 50                  # units on one request (submit_request)
+PATIENT_REF_MAX = 20            # blood_request.patient_ref is VARCHAR(20)
+NAME_MAX = 50                   # user_account.first_name / last_name are VARCHAR(50)
+MAX_AGE_YEARS = 120             # an older date of birth is a typing error
+LOGIN_FAILED = "Wrong email or password. After 5 wrong attempts an account is locked for 15 minutes."
+PHONE_RE = re.compile(r"\+?[0-9][0-9 ().x-]{5,18}[0-9]")       # the same pattern as the user_account and facility checks
+
+__all__ = ["request_scope", "current_connection"]   # re-exported for the web layer (one connection per request)
+
+
+def clinic_today():
+    """The clinic's calendar date now (America/Toronto), whatever the server's own zone."""
+    return dt.datetime.now(CLINIC_TZ).date()
 
 
 class AccessDenied(Exception):
@@ -37,24 +55,38 @@ class InvalidInput(ValueError):
 def _friendly(exc):
     """An InvalidInput with a plain message for the database errors a user can cause (blank or out-of-range values, duplicates,
     over-long text); None for anything else, including the procedures' own RAISE messages, which are already readable."""
-    table = (exc.diag.table_name or "").replace("_", " ")
+    table = (exc.diag.table_name or "").replace(" ", "_")
+    constraint = exc.diag.constraint_name or ""
+    if isinstance(exc, pg.RaiseException):
+        # the procedures name the field first ('units: Enter ...'), so the screen can show it next to that field (C5)
+        msg = exc.diag.message_primary or ""
+        if msg.endswith("belongs to another facility"):
+            return AccessDenied(msg)
+        return InvalidInput(msg) if _FIELD_MSG.match(msg) else None
     if isinstance(exc, pg.UniqueViolation):
-        if "email" in (exc.diag.constraint_name or ""):
-            return InvalidInput("email: that email is already registered")
-        return InvalidInput(f"{table or 'record'}: that already exists")
+        if "email" in constraint:
+            return InvalidInput("email: That email is already registered")
+        if constraint == "facility_name_ci":
+            return InvalidInput("name: A facility with that name already exists")
+        return InvalidInput(f"{table or 'record'}: That already exists")
     if isinstance(exc, pg.CheckViolation):
-        return InvalidInput(f"{table or 'form'}: a value is blank or outside the allowed range")
+        if constraint.startswith("user_account") and "phone" in (exc.diag.message_detail or exc.diag.message_primary or ""):
+            return InvalidInput("phone: Enter a phone number like 519-555-0100")
+        return InvalidInput(f"{table or 'form'}: A value is blank or outside the allowed range")
     if isinstance(exc, pg.NotNullViolation):
-        return InvalidInput(f"{table or 'form'}: a required value is missing")
+        return InvalidInput(f"{table or 'form'}: A required value is missing")
     if isinstance(exc, pg.ForeignKeyViolation):
-        return InvalidInput("form: that refers to a record that does not exist, or other records still depend on it")
+        return InvalidInput("form: That refers to a record that does not exist, or other records still depend on it")
     if isinstance(exc, pg.StringDataRightTruncation):
-        return InvalidInput("form: a value is too long")
+        return InvalidInput("form: A value is too long")
     if isinstance(exc, pg.NumericValueOutOfRange):
-        return InvalidInput("form: a number is out of range")
+        return InvalidInput("form: A number is out of range")
     if isinstance(exc, pg.DataError):
-        return InvalidInput("form: a value is not in the expected format")
+        return InvalidInput("form: A value is not in the expected format")
     return None
+
+
+_FIELD_MSG = re.compile(r"^[a-z_][a-z0-9_]*: ")
 
 
 @contextmanager
@@ -70,11 +102,23 @@ def session(user_id=None):
         raise friendly from exc
 
 
+def _cap(text):
+    return text[:1].upper() + text[1:]
+
+
 def _text(value, field, label=None):
     """A required text value, trimmed; blank is refused."""
     value = (value or "").strip() if isinstance(value, str) or value is None else str(value).strip()
     if not value:
-        raise InvalidInput(f"{field}: {label or field.replace('_', ' ')} is required")
+        raise InvalidInput(f"{field}: {_cap(label or field.replace('_', ' '))} is required")
+    return value
+
+
+def _name(value, field, label):
+    """A first or last name: required, and at most NAME_MAX characters, reported at its field (DA-N3)."""
+    value = _text(value, field, label)
+    if len(value) > NAME_MAX:
+        raise InvalidInput(f"{field}: Use at most {NAME_MAX} characters for the {label}")
     return value
 
 
@@ -83,9 +127,9 @@ def _number(value, field, low, high, unit=""):
     try:
         x = float(value)
     except (TypeError, ValueError):
-        raise InvalidInput(f"{field}: enter a number") from None
+        raise InvalidInput(f"{field}: Enter a number") from None
     if not math.isfinite(x) or not low <= x <= high:
-        raise InvalidInput(f"{field}: enter a value between {low} and {high}{unit}")
+        raise InvalidInput(f"{field}: Enter a value between {low} and {high}{unit}")
     return x
 
 
@@ -100,14 +144,51 @@ def _role(con, user_id, role):
 
 def _check_email(email):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email or ""):
-        raise InvalidInput("email: enter an address like name@example.com")
+        raise InvalidInput("email: Enter an address like name@example.com")
 
 
-def _check_password(password):
-    if len(password or "") < 10:
-        raise InvalidInput("password: use at least 10 characters")
+def _check_phone(phone):
+    """None for a blank phone; otherwise the trimmed number, which must look like one (DON-11)."""
+    phone = (phone or "").strip() or None
+    if phone and not PHONE_RE.fullmatch(phone):
+        raise InvalidInput("phone: Enter a phone number like 519-555-0100")
+    return phone
+
+
+# SE-01: passwords people pick first; checked without case, spaces or trailing digits and punctuation
+_COMMON = {"password", "passw0rd", "qwerty", "qwertyuiop", "asdfghjkl", "letmein", "welcome", "iloveyou", "admin",
+           "abc", "abcdef", "abcdefgh", "abcdefghij", "changeme", "monkey", "dragon", "football", "baseball", "sunshine",
+           "princess", "trustno", "master", "vytal", "blood", "donor", "secret", "default", "login", "hello", "test"}
+
+
+# simple letter-for-symbol swaps people make to "strengthen" a common password; 1 can stand for i or l
+_LEET = [str.maketrans("@4310$5!7+|", "aaeiossittl"), str.maketrans("@4310$5!7+|", "aaelossittl")]
+
+
+def check_password(password, email=None):
+    """C4 password rule for every new or changed password: 10 to 72 bytes, at least one letter and one digit, not a common
+    password, not one repeated character and not containing the email's name part. Raises InvalidInput('password: ...')."""
+    if not isinstance(password, str) or len(password) < 10:
+        raise InvalidInput("password: Use at least 10 characters")
     if len(password.encode()) > MAX_PASSWORD_BYTES:
-        raise InvalidInput(f"password: use at most {MAX_PASSWORD_BYTES} bytes (bcrypt ignores the rest)")
+        raise InvalidInput(f"password: Use at most {MAX_PASSWORD_BYTES} bytes (bcrypt ignores the rest)")
+    if not password.strip():
+        raise InvalidInput("password: A password cannot be only spaces")
+    if not re.search(r"[^\W\d_]", password) or not re.search(r"\d", password):
+        raise InvalidInput("password: Use at least one letter and one digit")
+    if len(set(password.lower())) <= 2:
+        raise InvalidInput("password: Use more than one or two different characters")
+    core = re.sub(r"[\d\W_]+$", "", re.sub(r"\s+", "", password.lower()))
+    plain = {core.translate(t) for t in _LEET}                  # P@ssw0rd -> password (NEW-06)
+    if (core in _COMMON or core.rstrip("0123456789") in _COMMON or plain & _COMMON
+            or password.lower().strip() in {"1234567890a", "a1234567890"}):
+        raise InvalidInput("password: That password is too common: choose another")
+    local = (email or "").split("@")[0].lower()
+    if len(local) >= 3 and local in password.lower():
+        raise InvalidInput("password: Do not use your email address in the password")
+
+
+_check_password = check_password
 
 
 def _check_weight(weight_kg):
@@ -119,9 +200,13 @@ def _check_height(height_cm):
 
 
 def _own_request(con, staff_id, request_id):
+    """C6: a request that does not exist is 'not found'; one of another facility is refused."""
     fac = _role(con, staff_id, "Staff")
-    if con.execute("SELECT facility_id FROM v_request WHERE request_id = %s", (request_id,)).fetchone() != (fac,):
-        raise AccessDenied("request belongs to another facility")
+    row = con.execute("SELECT facility_id FROM v_request WHERE request_id = %s", (request_id,)).fetchone()
+    if row is None:
+        raise InvalidInput(f"request: Request #{request_id} was not found")
+    if row != (fac,):
+        raise AccessDenied(f"Request #{request_id} belongs to another facility")
     return fac
 
 
@@ -129,37 +214,45 @@ def _own_request(con, staff_id, request_id):
 def register_donor(email, password, first, last, phone, dob, sex, weight_kg, height_cm, address, blood_group=None):
     """FR-01, with server-side validation (SE-09) so the user gets a field-level message before the database refuses."""
     _check_email(email)
-    _check_password(password)
-    first, last = _text(first, "first_name", "first name"), _text(last, "last_name", "last name")
+    check_password(password, email)
+    first, last = _name(first, "first_name", "first name"), _name(last, "last_name", "last name")
+    phone = _check_phone(phone)
     if sex not in ("M", "F"):
-        raise InvalidInput("sex: choose M or F")
+        raise InvalidInput("sex: Choose male or female")
     _check_weight(weight_kg)
     _check_height(height_cm)
     if blood_group not in GROUPS | {None}:
-        raise InvalidInput("blood_group: choose a group or 'I don't know'")
-    if dob >= dt.date.today():
-        raise InvalidInput("date_of_birth: must be in the past")
+        raise InvalidInput("blood_group: Choose a group or 'I don't know'")
+    today = clinic_today()
+    if not isinstance(dob, dt.date) or dob >= today:
+        raise InvalidInput("date_of_birth: The date of birth must be in the past")
+    if dob < dt.date(1900, 1, 1) or _years_between(dob, today) > MAX_AGE_YEARS:
+        raise InvalidInput("date_of_birth: Enter a real date of birth")
     with session() as con:
         min_age = con.execute("SELECT min_age_years FROM eligibility_rule WHERE sex = %s", (sex,)).fetchone()[0]
-        if _years_between(dob, dt.date.today()) < min_age:                # UC-01 2b; the procedure enforces it too
-            raise InvalidInput(f"date_of_birth: donors must be at least {min_age} years old")
+        if _years_between(dob, today) < min_age:                # UC-01 2b; the procedure enforces it too
+            raise InvalidInput(f"date_of_birth: Donors must be at least {min_age} years old to register")
         return con.execute("CALL register_donor(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                            (email, hash_password(password), first, last, phone, dob, sex, weight_kg, height_cm, address,
                             blood_group)).fetchone()[0]
 
 
-def login(email, password):
-    """SE-01 / SE-05. Returns (user_id, role); raises AccessDenied with the reason shown to the user."""
+def login(email, password, exempt_ids=frozenset()):
+    """SE-01 / SE-05. Returns (user_id, role); raises AccessDenied with the reason shown to the user.
+    A wrong password, an unknown email and a locked account all give LOGIN_FAILED, so the message never tells whether an
+    email has an account (DON-15). Only after the right password is a deactivated account or facility named. Wrong
+    passwords for exempt_ids (the shared demo accounts) are not counted, so no visitor can lock them (SEC-ISS-02)."""
     with session() as con:
-        row = con.execute("SELECT user_id, role, password_hash FROM login_lookup(%s)", (email,)).fetchone()   # SE-07
+        row = con.execute("SELECT user_id, role, password_hash FROM login_lookup(%s)", ((email or "").strip(),)).fetchone()
         if not row:
-            verify_password(password, _DUMMY_HASH)
-            raise AccessDenied("wrong email or password")
-        outcome = con.execute("CALL login_attempt(%s, %s)", (row[0], verify_password(password, row[2]))).fetchone()[0]
+            verify_password(password or "", _DUMMY_HASH)
+            raise AccessDenied(LOGIN_FAILED)
+        ok = verify_password(password or "", row[2])
+        outcome = con.execute("CALL login_attempt(%s, %s, %s)", (row[0], ok, row[0] not in exempt_ids)).fetchone()[0]
     if outcome != "ok":
-        raise AccessDenied({"failed": "wrong email or password", "locked": "account locked for 15 minutes",
-                            "inactive": "account is deactivated",
-                            "facility_inactive": "your facility is deactivated: ask an administrator"}[outcome])
+        raise AccessDenied({"failed": LOGIN_FAILED, "locked": LOGIN_FAILED,
+                            "inactive": "This account is deactivated: ask an administrator",
+                            "facility_inactive": "Your facility is deactivated: ask an administrator"}[outcome])
     return row[0], row[1]
 
 
@@ -180,7 +273,9 @@ def donor_home(donor_id):
 
 
 def respond_to_call(donor_id, call_id, accept):
-    """FR-27 / UC-20: returns the facility's details on accept, 'declined', or 'closed' when no donation is needed now."""
+    """FR-27 / UC-20: returns a sentence for the donor (where to go on accept, a thank-you on decline). A call whose request
+    is closed or past its required-by time raises InvalidInput('call: This request is no longer open...') (2a). Answering
+    marks the call's notification read; on accept the facility's staff are notified."""
     with session(donor_id) as con:
         _role(con, donor_id, "Donor")
         return con.execute("CALL respond_to_call(%s,%s,%s)", (call_id, donor_id, accept)).fetchone()[0]
@@ -194,34 +289,67 @@ def complete_screening(donor_id, answers):
         return con.execute("SELECT status FROM v_donor_eligibility WHERE user_id = %s", (donor_id,)).fetchone()[0]
 
 
+SCREENING_REPEAT_MINUTES = 10      # DON-08: the same answers again within this time are the same screening, sent twice
+
+
+def complete_screening_once(donor_id, answers, minutes=SCREENING_REPEAT_MINUTES):
+    """UC-04 from the donor's own form: (status, saved). When the donor's last screening was taken in the past `minutes` with
+    exactly these answers, the post is a resubmit (Back, then Submit again) and nothing new is stored (DON-08)."""
+    want = {int(k): bool(v) for k, v in answers.items()}
+    with session(donor_id) as con:
+        _role(con, donor_id, "Donor")
+        last = con.execute("SELECT screening_id FROM screening WHERE donor_id = %s AND completed_at > now() - make_interval(mins => %s) "
+                           "ORDER BY completed_at DESC, screening_id DESC LIMIT 1", (donor_id, minutes)).fetchone()
+        if last and {q: a for q, _, a in con.execute("SELECT * FROM screening_answers(%s)", last).fetchall()} == want:
+            return con.execute("SELECT status FROM v_donor_eligibility WHERE user_id = %s", (donor_id,)).fetchone()[0], False
+        con.execute("CALL submit_screening(%s,%s)", (donor_id, json.dumps({str(k): v for k, v in want.items()})))
+        return con.execute("SELECT status FROM v_donor_eligibility WHERE user_id = %s", (donor_id,)).fetchone()[0], True
+
+
 def profile(user_id):
     """UC-03: the caller's own profile with contact details (the app role reads them only through my_profile())."""
     with session(user_id) as con:
         cur = con.execute("SELECT * FROM my_profile()")
         row = cur.fetchone()
         if not row:
-            raise AccessDenied("no such account")
+            raise AccessDenied("No such account")
         return dict(zip([c.name for c in cur.description], row))
 
 
 def change_password(user_id, old_password, new_password):
-    """UC-01 2a: the user proves the old password, then sets a new one; open sessions end, so they sign in again."""
-    _check_password(new_password)
+    """UC-01 2a: the user proves the old password, then sets a new one; open sessions end, so they sign in again.
+    The current password is checked like a sign-in: a wrong one counts toward the lockout, so a borrowed session cannot
+    guess it (SEC-ISS-09), and while the account is locked the change is refused even with the right one."""
     with session(user_id) as con:
         email = con.execute("SELECT email FROM my_profile()").fetchone()
         row = con.execute("SELECT password_hash FROM login_lookup(%s)", email).fetchone() if email else None
-        if not row or not verify_password(old_password, row[0]):
-            raise AccessDenied("current password is wrong")
+        if not row:
+            raise AccessDenied("No such account")
+    ok = verify_password(old_password or "", row[0])
+    if ok:                                       # rule checks first, so a valid current password is not spent on a typo
+        check_password(new_password, email[0])
+        if new_password == old_password:
+            raise InvalidInput("password: Choose a password different from the current one")
+    with session(user_id) as con:
+        outcome = con.execute("CALL login_attempt(%s, %s)", (user_id, ok)).fetchone()[0]
+    if outcome == "locked":
+        raise InvalidInput("current_password: Too many wrong attempts: the account is locked for 15 minutes")
+    if outcome == "failed":
+        raise InvalidInput("current_password: The current password is wrong")
+    if outcome != "ok":
+        raise AccessDenied("This account cannot change its password now")
+    with session(user_id) as con:
         con.execute("CALL set_password(%s,%s)", (user_id, hash_password(new_password)))
 
 
 def update_profile(donor_id, phone, email, address, weight_kg, height_cm):
     """UC-03 / FR-03: contact details, weight and height; the blood group is not editable here once verified."""
     _check_email(email)
+    phone = _check_phone(phone)
     _check_weight(weight_kg)
     _check_height(height_cm)
-    return _call(donor_id, "CALL update_donor_profile(%s,%s,%s,%s,%s,%s)", donor_id, phone, email, address, weight_kg,
-                 height_cm)
+    return _call(donor_id, "CALL update_donor_profile(%s,%s,%s,%s,%s,%s)", donor_id, phone, email.strip(), address,
+                 weight_kg, height_cm)
 
 
 # ---------------------------------------------------------------------- staff: clinic
@@ -242,7 +370,7 @@ def screen_donor(staff_id, donor_id, answers):
 def verify_blood_group(staff_id, donor_id, blood_group):
     """FR-09: staff confirm a donor's group and are recorded as the verifier."""
     if blood_group not in GROUPS:
-        raise InvalidInput("blood_group: choose one of the eight groups")
+        raise InvalidInput("blood_group: Choose one of the eight groups")
     with session(staff_id) as con:
         _role(con, staff_id, "Staff")
         con.execute("CALL verify_blood_group(%s,%s,%s)", (staff_id, donor_id, blood_group))
@@ -252,12 +380,12 @@ def record_donation(staff_id, donor_id, donation_type, volume_ml, hemoglobin_gl,
     """FR-11 / FR-12: returns (donation_id, unit ids), or (None, []) when low hemoglobin deferred the donor (UC-07 2a)."""
     _number(hemoglobin_gl, "hemoglobin_gl", 30, 250, " g/L")
     if isinstance(volume_ml, bool) or not isinstance(volume_ml, int) or not 50 <= volume_ml <= 1000:
-        raise InvalidInput("volume_ml: enter a volume between 50 and 1000 ml")
+        raise InvalidInput("volume_ml: Enter a volume between 50 and 1000 ml")
     components = list(components or [])
     if not components:
-        raise InvalidInput("components: choose at least one component")
+        raise InvalidInput("components: Choose at least one component")
     if not set(components) <= COMPONENTS or len(set(components)) != len(components):
-        raise InvalidInput("components: choose each of RBC, PLASMA or PLT at most once")
+        raise InvalidInput("components: Choose each of RBC, PLASMA or PLT at most once")
     with session(staff_id) as con:
         _role(con, staff_id, "Staff")
         dn = con.execute("CALL record_donation(%s,%s,%s,%s,%s)",
@@ -276,12 +404,17 @@ def components_for_donation_type(donation_type):
 
 
 def record_tests(staff_id, donation_id, results):
-    """FR-13: results maps test_code -> 'Negative' | 'Positive'. Only the collecting facility records results (SE-02)."""
+    """FR-13: results maps test_code -> 'Negative' | 'Positive'. Only the collecting facility records results (SE-02).
+    C8: any subset of the tests may be sent; one already recorded with the same value is skipped, a different value is
+    refused. The units are released once every test is in."""
     with session(staff_id) as con:
         fac = _role(con, staff_id, "Staff")
-        if con.execute("SELECT s.facility_id FROM donation d JOIN staff s ON s.user_id = d.recorded_by "
-                       "WHERE d.donation_id = %s", (donation_id,)).fetchone() != (fac,):
-            raise AccessDenied("donation was collected at another facility")
+        row = con.execute("SELECT s.facility_id FROM donation d JOIN staff s ON s.user_id = d.recorded_by "
+                          "WHERE d.donation_id = %s", (donation_id,)).fetchone()
+        if row is None:
+            raise InvalidInput(f"donation: Donation {donation_id} was not found")
+        if row != (fac,):
+            raise AccessDenied(f"Donation {donation_id} belongs to another facility")
         return con.execute("CALL record_tests(%s,%s)", (donation_id, json.dumps(results))).fetchone()[0]
 
 
@@ -289,8 +422,10 @@ def record_tests(staff_id, donation_id, results):
 def submit_request(staff_id, patient_ref, recipient_group, component, units, urgency, required_by):
     """FR-22 + FR-23 in one transaction: create the request and reserve what the shelf can cover."""
     patient_ref = _text(patient_ref, "patient_ref", "the patient reference")
-    if isinstance(units, bool) or not isinstance(units, int) or not 1 <= units <= 50:
-        raise InvalidInput("units: enter a whole number of units from 1 to 50")
+    if len(patient_ref) > PATIENT_REF_MAX:
+        raise InvalidInput(f"patient_ref: Use at most {PATIENT_REF_MAX} characters for the patient reference")
+    if isinstance(units, bool) or not isinstance(units, int) or not 1 <= units <= MAX_UNITS:
+        raise InvalidInput(f"units: Enter a whole number of units from 1 to {MAX_UNITS}")
     with session(staff_id) as con:
         _role(con, staff_id, "Staff")
         rid, reserved, shortfall = con.execute("CALL submit_request(%s,%s,%s,%s,%s,%s,%s)",
@@ -302,12 +437,12 @@ def submit_request(staff_id, patient_ref, recipient_group, component, units, urg
 def confirm_request_group(staff_id, request_id, blood_group):
     """UC-16 step 6: the lab confirms an Unknown group; reserve whatever compatible stock now covers the shortfall."""
     if blood_group not in GROUPS:
-        raise InvalidInput("blood_group: choose one of the eight groups")
+        raise InvalidInput("blood_group: Choose one of the eight groups")
     with session(staff_id) as con:
         _own_request(con, staff_id, request_id)
         if con.execute("SELECT recipient_group IS NULL AND status = 'Open' FROM blood_request WHERE request_id = %s",
                        (request_id,)).fetchone() != (True,):
-            raise InvalidInput("request is closed or already has a confirmed group")
+            raise InvalidInput(f"blood_group: Request #{request_id} is closed or already has a confirmed group")
         reserved, shortfall = con.execute("CALL confirm_request_group(%s,%s,%s)",
                                           (staff_id, request_id, blood_group)).fetchone()
     return {"request_id": request_id, "reserved": reserved, "shortfall": shortfall}
@@ -317,7 +452,7 @@ def close_request(staff_id, request_id, cancel=False, issued_units=None):
     """FR-28 / UC-21: issue the reserved units staff confirm (all of them if none are listed; the rest go back to
     Available), or cancel and release them, for a request at the caller's facility. Issuing nothing is refused."""
     if not cancel and issued_units is not None and len(list(issued_units)) == 0:
-        raise InvalidInput("issued_units: select at least one reserved unit to issue, or cancel the request")
+        raise InvalidInput("issued_units: Select at least one reserved unit to issue, or cancel the request")
     with session(staff_id) as con:
         _own_request(con, staff_id, request_id)
         return con.execute("CALL close_request(%s,%s,%s)",
@@ -336,9 +471,9 @@ def call_responses(staff_id, request_id):
 def search_donors(staff_id, recipient_group, component="RBC"):
     """UC-18 manual search by blood group: eligible, verified, compatible donors; code, group and eligibility only (SE-07)."""
     if recipient_group not in GROUPS:
-        raise InvalidInput("blood_group: choose one of the eight groups")
+        raise InvalidInput("blood_group: Choose one of the eight groups")
     if component not in COMPONENTS:
-        raise InvalidInput("component: choose RBC, PLASMA or PLT")
+        raise InvalidInput("component: Choose RBC, PLASMA or PLT")
     with session(staff_id) as con:
         _role(con, staff_id, "Staff")
         return con.execute("SELECT * FROM donors_for_group(%s,%s) ORDER BY donor_code", (recipient_group, component)).fetchall()
@@ -372,10 +507,8 @@ def open_alerts(staff_id):
     """FR-21 / UC-13 step 3: open low-stock alerts at the caller's facility, with current stock against the minimum."""
     with session(staff_id) as con:
         fac = _role(con, staff_id, "Staff")
-        return con.execute("SELECT a.blood_group, a.component_code, coalesce(i.available, 0), t.min_units, a.opened_at "
-                           "FROM stock_alert a JOIN stock_threshold t USING (facility_id, blood_group, component_code) "
-                           "LEFT JOIN v_inventory i USING (facility_id, blood_group, component_code) "
-                           "WHERE a.facility_id = %s AND a.cleared_at IS NULL ORDER BY a.opened_at", (fac,)).fetchall()
+        return con.execute("SELECT blood_group, component_code, available, min_units, opened_at FROM v_low_stock "      # C10 / INT-11
+                           "WHERE facility_id = %s ORDER BY opened_at, component_code, blood_group", (fac,)).fetchall()
 
 
 def list_notifications(user_id, unread_only=False):
@@ -399,14 +532,14 @@ def record_deferral(staff_id, donor_id, reason, end=None):
 def discard_unit(user_id, unit_id, reason):
     """UC-15 / FR-16 (staff, own facility); an Admin discards Quarantined units after a lookback (UC-22)."""
     if not (reason or "").strip():
-        raise InvalidInput("reason: choose a discard reason")
+        raise InvalidInput("reason: Choose a discard reason")
     return _call(user_id, "CALL discard_unit(%s,%s,%s)", user_id, unit_id, reason)
 
 
 def set_threshold(user_id, facility_id, blood_group, component, min_units):
     """UC-12 / FR-18: staff for their own facility, an Admin for any."""
     if isinstance(min_units, bool) or not isinstance(min_units, int) or not 0 <= min_units <= 1000:
-        raise InvalidInput("min_units: enter a whole number from 0 to 1000")
+        raise InvalidInput("min_units: Enter a whole number from 0 to 1000")
     return _call(user_id, "CALL set_threshold(%s,%s,%s,%s,%s)", user_id, facility_id, blood_group, component, min_units)
 
 
@@ -418,7 +551,7 @@ _LOOKBACK = ("SELECT donation_id, donated_at, unit_id, component_code, status, h
 def lookback(admin_id, donor_code=None, unit_id=None):
     """UC-22 / FR-30: everything the donor gave, found by donor code or by any one of their unit ids."""
     if not (donor_code or unit_id):
-        raise InvalidInput("enter a donor code or a unit id")
+        raise InvalidInput("donor_code: Enter a donor code or a unit id")
     with session(admin_id) as con:
         _role(con, admin_id, "Admin")
         if donor_code:
@@ -426,7 +559,7 @@ def lookback(admin_id, donor_code=None, unit_id=None):
         else:
             row = con.execute("SELECT donor_id FROM v_blood_unit WHERE unit_id = %s", (unit_id,)).fetchone()
         if not row:
-            raise InvalidInput("no donor or unit with that code")
+            raise InvalidInput("donor_code: No donor or unit has that code")
         return con.execute(_LOOKBACK, row).fetchall()
 
 
@@ -442,7 +575,7 @@ def clear_lookback(admin_id, donor_id, note):
     """UC-22 "investigation cleared": the donor's Quarantined units go back on the shelf and the flag is lifted. Refused
     when the donor has a permanent deferral or a positive test (then the units are discarded). Returns units released."""
     if not (note or "").strip():
-        raise InvalidInput("note: say why the investigation was cleared")
+        raise InvalidInput("note: Say why the investigation was cleared")
     return _call(admin_id, "CALL clear_lookback(%s,%s,%s)", admin_id, donor_id, note)
 
 
@@ -457,7 +590,7 @@ def lookback_issued_csv(admin_id, donor_code, path=None):
         _role(con, admin_id, "Admin")
         row = con.execute("SELECT user_id FROM donor WHERE donor_code = %s", (donor_code,)).fetchone()
         if not row:
-            raise InvalidInput("no donor with that code")
+            raise InvalidInput("donor_code: No donor has that code")
         cur = con.execute(_LOOKBACK_ISSUED, row)
         return _csv(cur, path)
 
@@ -470,22 +603,27 @@ _AUDIT = ("SELECT audit_id, changed_at, user_id, action, table_name, record_id, 
           "%(limit)s::int, %(offset)s::int)")
 
 
-def _day_start(value):
-    return value if isinstance(value, dt.datetime) else dt.datetime.combine(value, dt.time.min).astimezone()
+def _instant(value):
+    """A datetime as an exact instant; a naive one is read as the clinic's local time."""
+    return value if value.tzinfo else value.replace(tzinfo=CLINIC_TZ)
+
+
+def _day_start(day):
+    return dt.datetime.combine(day, dt.time.min, CLINIC_TZ)
 
 
 def _audit_bounds(since, until):
-    """'To' is inclusive: a plain date, or a datetime at exactly midnight (what a date field sends), covers that whole day.
-    A date counts as a day of the server's local time; a datetime keeps its own zone."""
-    if since is not None and not isinstance(since, dt.datetime):
-        since = _day_start(since)
-    if until is not None:
-        if isinstance(until, dt.datetime):
-            if until.time() == dt.time.min:
-                until = until + dt.timedelta(days=1)
-        else:
-            until = _day_start(until + dt.timedelta(days=1))
-    return since, until
+    """C2: a plain date is a whole clinic day (America/Toronto, as the screen shows times), both ends inclusive, so
+    since..until is [since 00:00, the day after until 00:00). A datetime is an exact instant, used as given."""
+    def is_day(v):
+        return isinstance(v, dt.date) and not isinstance(v, dt.datetime)
+    if is_day(since) and is_day(until) and since > until:
+        raise InvalidInput("until: The 'to' date is before the 'from' date")
+    lo = None if since is None else (_day_start(since) if is_day(since) else _instant(since))
+    hi = None if until is None else (_day_start(until + dt.timedelta(days=1)) if is_day(until) else _instant(until))
+    if lo is not None and hi is not None and lo > hi:
+        raise InvalidInput("until: The 'to' date is before the 'from' date")
+    return lo, hi
 
 
 def audit_log(admin_id, user_id=None, table=None, record_id=None, since=None, until=None, limit=500, offset=0):
@@ -493,7 +631,7 @@ def audit_log(admin_id, user_id=None, table=None, record_id=None, since=None, un
     date. Rows end with user_name, user_email and total_count (all matching entries, for paging with limit and offset)."""
     since, until = _audit_bounds(since, until)
     if not isinstance(limit, int) or not isinstance(offset, int) or limit < 0 or offset < 0:
-        raise InvalidInput("limit: enter whole numbers of 0 or more")
+        raise InvalidInput("limit: Enter whole numbers of 0 or more")
     with session(admin_id) as con:
         _role(con, admin_id, "Admin")
         return con.execute(_AUDIT, {"user": user_id, "table": table, "record": record_id, "since": since, "until": until,
@@ -513,31 +651,31 @@ def audit_csv(admin_id, path=None, **filters):
 # FR-32 / UC-24 clinical rules (MA-01): the procedures check the Admin role, audit the change and refuse stranding edits
 def set_compatibility(admin_id, component, recipient_group, donor_group, allowed):
     if component not in COMPONENTS or recipient_group not in GROUPS or donor_group not in GROUPS:
-        raise InvalidInput("choose a component and two of the eight blood groups")
+        raise InvalidInput("component: Choose a component and two of the eight blood groups")
     return _call(admin_id, "CALL set_compatibility(%s,%s,%s,%s,%s)", admin_id, component, recipient_group, donor_group,
                  bool(allowed))
 
 
 def set_shelf_life(admin_id, component, days):
     if component not in COMPONENTS:
-        raise InvalidInput("component: choose RBC, PLASMA or PLT")
+        raise InvalidInput("component: Choose RBC, PLASMA or PLT")
     _check_days(days, "shelf_life_days", 1095)
     return _call(admin_id, "CALL set_shelf_life(%s,%s,%s)", admin_id, component, days)
 
 
 def set_donation_interval(admin_id, donation_type, sex, days):
     if sex not in ("M", "F"):
-        raise InvalidInput("sex: choose M or F")
+        raise InvalidInput("sex: Choose male or female")
     _check_days(days, "interval_days", 365)
     return _call(admin_id, "CALL set_donation_interval(%s,%s,%s,%s)", admin_id, donation_type, sex, days)
 
 
 def save_deferral_reason(admin_id, code, description, permanent, default_days=None):
     if not re.fullmatch(r"[A-Za-z]{2,10}", code or ""):
-        raise InvalidInput("reason_code: 2 to 10 letters")
+        raise InvalidInput("reason_code: Use 2 to 10 letters")
     description = _text(description, "description")
     if permanent and default_days is not None:
-        raise InvalidInput("default_days: a permanent reason has no default length")
+        raise InvalidInput("default_days: A permanent reason has no default length")
     if not permanent:
         _check_days(default_days, "default_days", 3650)
     return _call(admin_id, "CALL save_deferral_reason(%s,%s,%s,%s,%s)", admin_id, code, description, bool(permanent),
@@ -546,14 +684,14 @@ def save_deferral_reason(admin_id, code, description, permanent, default_days=No
 
 def set_eligibility_rule(admin_id, sex, min_age, min_weight_kg, min_hemoglobin_gl, min_blood_volume_ml):
     if sex not in ("M", "F"):
-        raise InvalidInput("sex: choose M or F")
+        raise InvalidInput("sex: Choose male or female")
     if not (isinstance(min_age, int) and 16 <= min_age <= 25):
-        raise InvalidInput("min_age_years: enter a whole number from 16 to 25")
+        raise InvalidInput("min_age_years: Enter a whole number from 16 to 25")
     _number(min_weight_kg, "min_weight_kg", 30, 100, " kg")
     _number(min_hemoglobin_gl, "min_hemoglobin_gl", 100, 180, " g/L")
     if isinstance(min_blood_volume_ml, bool) or not isinstance(min_blood_volume_ml, int) \
             or not 1500 <= min_blood_volume_ml <= 6000:
-        raise InvalidInput("min_blood_volume_ml: enter a whole number of ml from 1500 to 6000")
+        raise InvalidInput("min_blood_volume_ml: Enter a whole number of ml from 1500 to 6000")
     return _call(admin_id, "CALL set_eligibility_rule(%s,%s,%s,%s,%s,%s)", admin_id, sex, min_age, min_weight_kg,
                  min_hemoglobin_gl, min_blood_volume_ml)
 
@@ -569,16 +707,16 @@ def admin_overview(admin_id):
 def create_admin(admin_id, email, password, first, last):
     """UC-23 / FR-04: returns the new Admin's user_id."""
     _check_email(email)
-    _check_password(password)
-    first, last = _text(first, "first_name", "first name"), _text(last, "last_name", "last name")
+    check_password(password, email)
+    first, last = _name(first, "first_name", "first name"), _name(last, "last_name", "last name")
     return _call(admin_id, "CALL create_admin(%s,%s,%s,%s,%s)", admin_id, email, hash_password(password), first, last)
 
 
 def create_staff(admin_id, email, password, first, last, facility_id, job_title=None):
     """UC-23 / FR-04: a staff account tied to one active facility; returns its user_id."""
     _check_email(email)
-    _check_password(password)
-    first, last = _text(first, "first_name", "first name"), _text(last, "last_name", "last name")
+    check_password(password, email)
+    first, last = _name(first, "first_name", "first name"), _name(last, "last_name", "last name")
     return _call(admin_id, "CALL create_staff(%s,%s,%s,%s,%s,%s,%s)",
                  admin_id, email, hash_password(password), first, last, facility_id, job_title)
 
@@ -589,19 +727,17 @@ def create_account(admin_id, account_type, email, password, first, last, facilit
         return create_admin(admin_id, email, password, first, last)
     if account_type == "Staff":
         if facility_id is None:
-            raise InvalidInput("facility_id: choose the facility the staff member works at")
+            raise InvalidInput("facility_id: Choose the facility the staff member works at")
         return create_staff(admin_id, email, password, first, last, facility_id, job_title)
-    raise InvalidInput("account_type: choose Staff or Admin")
+    raise InvalidInput("account_type: Choose Staff or Admin")
 
 
 def save_facility(admin_id, facility_id, name, facility_type, address, phone=None, email=None):
     """UC-23 / FR-35: facility_id None creates a facility; returns its id."""
     if facility_type not in ("Hospital", "Blood Bank"):
-        raise InvalidInput("facility_type: choose Hospital or Blood Bank")
+        raise InvalidInput("facility_type: Choose Hospital or Blood Bank")
     name, address = _text(name, "name", "the facility name"), _text(address, "address", "the facility address")
-    phone = (phone or "").strip() or None
-    if phone and not re.fullmatch(r"\+?[0-9][0-9 ().x-]{5,18}[0-9]", phone):
-        raise InvalidInput("phone: enter a phone number like 519-555-0100")
+    phone = _check_phone(phone)
     email = (email or "").strip() or None
     if email:
         _check_email(email)
@@ -611,7 +747,7 @@ def save_facility(admin_id, facility_id, name, facility_type, address, phone=Non
 
 def admin_reset_password(admin_id, user_id, new_password):
     """UC-01 2a / UC-23: an Admin sets a new password for an account; it also clears a lockout and ends open sessions."""
-    _check_password(new_password)
+    check_password(new_password)
     return _call(admin_id, "CALL admin_reset_password(%s,%s,%s)", admin_id, user_id, hash_password(new_password))
 
 
@@ -619,13 +755,46 @@ def set_account_active(admin_id, user_id, active):
     """UC-23 / FR-05: deactivate or reactivate an account (never deleted). Refused for the caller's own account and for
     the last active admin."""
     if not active and user_id == admin_id:
-        raise InvalidInput("user: you cannot deactivate your own account")
+        raise InvalidInput("user: You cannot deactivate your own account")
     return _call(admin_id, "CALL set_account_active(%s,%s,%s)", admin_id, user_id, active)
 
 
 def set_facility_active(admin_id, facility_id, active):
     """UC-23 2a: refused while the facility has open requests."""
     return _call(admin_id, "CALL set_facility_active(%s,%s,%s)", admin_id, facility_id, active)
+
+
+def update_account(admin_id, user_id, first, last, email, phone=None):
+    """C12 / UC-23: an Admin corrects an account's name, email and phone (any role). Emails stay unique whatever the
+    letter case; the change is audited (SE-08)."""
+    _check_email((email or "").strip())
+    first, last = _name(first, "first_name", "first name"), _name(last, "last_name", "last name")
+    return _call(admin_id, "CALL update_account(%s,%s,%s,%s,%s,%s)", admin_id, user_id, first, last, email.strip(),
+                 _check_phone(phone))
+
+
+def account_details(admin_id, user_id):
+    """C12: one account's contact details for the Admin edit page, as a dict (user_id, email, phone, first_name, last_name,
+    role, is_active); the app login reads them only through account_contact()."""
+    with session(admin_id) as con:
+        _role(con, admin_id, "Admin")
+        cur = con.execute("SELECT * FROM account_contact(%s)", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            raise InvalidInput("user: The account was not found")
+        return dict(zip([c.name for c in cur.description], row))
+
+
+def accounts_matching_email(admin_id, part):
+    """C12: ids of the accounts whose email contains part (any letter case, 3 characters or more), for account search."""
+    with session(admin_id) as con:
+        _role(con, admin_id, "Admin")
+        return [r[0] for r in con.execute("SELECT user_id FROM match_email(%s) ORDER BY 1", (part,)).fetchall()]
+
+
+def set_deferral_reason_active(admin_id, code, active):
+    """C12: retire a deferral reason (not offered for new deferrals; past deferrals keep it) or bring it back."""
+    return _call(admin_id, "CALL set_deferral_reason_active(%s,%s,%s)", admin_id, code, bool(active))
 
 
 def nightly_expiry(admin_id):
@@ -641,14 +810,19 @@ def _years_between(born, on):
 
 def _check_days(days, field, maximum):
     if isinstance(days, bool) or not isinstance(days, int) or not 0 < days <= maximum:
-        raise InvalidInput(f"{field}: enter a whole number of days from 1 to {maximum}")
+        raise InvalidInput(f"{field}: Enter a whole number of days from 1 to {maximum}")
+
+
+def _csv_value(v):
+    """Times in the clinic's zone with their offset (C2), so the file reads like the screen and still sorts exactly."""
+    return v.astimezone(CLINIC_TZ).isoformat() if isinstance(v, dt.datetime) and v.tzinfo else v
 
 
 def _csv(cur, path=None):
     buf = io.StringIO()
     out = csv.writer(buf)
     out.writerow([c.name for c in cur.description])
-    out.writerows(cur.fetchall())
+    out.writerows([_csv_value(v) for v in r] for r in cur.fetchall())
     text = buf.getvalue()
     if path:
         with open(path, "w", newline="") as f:
@@ -658,11 +832,18 @@ def _csv(cur, path=None):
 
 def _call(user_id, sql, *args):
     """One stored procedure in one transaction for one acting user; the procedure checks the user's role itself.
-    Returns its first INOUT value, or None for a procedure that hands nothing back."""
-    with session(user_id) as con:
-        cur = con.execute(sql, args)
-        row = cur.fetchone() if cur.description else None
-        return row[0] if row else None
+    Returns its first INOUT value, or None for a procedure that hands nothing back. A deadlock or serialization failure
+    rolled the whole call back, so it is run once more when it is the only work in its transaction (NEW-02)."""
+    for retry in (True, False):
+        nested = (con := current_connection()) is not None and con.info.transaction_status != psycopg.pq.TransactionStatus.IDLE
+        try:
+            with session(user_id) as con:
+                cur = con.execute(sql, args)
+                row = cur.fetchone() if cur.description else None
+                return row[0] if row else None
+        except (pg.DeadlockDetected, pg.SerializationFailure):
+            if not retry or nested:
+                raise
 
 
 # ---------------------------------------------------------------------- SE-06 sessions
@@ -684,7 +865,7 @@ def session_user(token):
     with session() as con:
         user_id, role = con.execute("CALL resume_session(%s)", (_token_hash(token or ""),)).fetchone()
     if user_id is None:
-        raise AccessDenied("session expired")
+        raise AccessDenied("Your session has expired: sign in again")
     return user_id, role
 
 

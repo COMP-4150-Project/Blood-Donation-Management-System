@@ -48,7 +48,10 @@ def test_report_role_is_read_only_and_cannot_see_password_hashes(db):
 APP_FUNCTIONS = {"donor_eligibility(integer,date)", "eligible_donors(integer)", "donors_for_group(text,text)",
                  "login_lookup(text)", "my_profile()", "screening_answers(integer)",
                  "audit_entries(integer,text,text,timestamp with time zone,timestamp with time zone,integer,integer)",
-                 "donation_type_allows(text,text)", "estimated_blood_volume_ml(character,numeric,numeric)"}
+                 "donation_type_allows(text,text)", "estimated_blood_volume_ml(character,numeric,numeric)",
+                 # C12 admin account edit and partial email search, C1 the clinic's calendar day, SE-04 eligibility core
+                 "account_contact(integer)", "match_email(text)", "clinic_tz()", "clinic_date(timestamp with time zone)",
+                 "clinic_today()", "eligibility_of(integer,date,character,numeric,numeric,boolean,date,boolean,date)"}
 INTERNAL_PROCEDURES = ["release_tested(integer,integer)"]
 
 
@@ -148,7 +151,7 @@ def test_app_role_cannot_write_any_table(db):
 @pytest.mark.parametrize("sql", ["UPDATE user_account SET role = 'Admin' WHERE user_id = (SELECT min(user_id) FROM donor)",
                                  "UPDATE donor SET is_flagged = NOT is_flagged",
                                  "UPDATE compatibility SET donor_group = 'O-'",
-                                 "INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by) VALUES (1, 'TATTOO', CURRENT_DATE, 1)"])
+                                 "INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by) VALUES (1, 'TATTOO', clinic_today(), 1)"])
 def test_app_role_cannot_bypass_the_procedures(app, sql):
     assert "permission denied" in app.fails(sql)
 
@@ -218,7 +221,7 @@ def test_own_staff_and_admin_pass_the_caller_checks(db):
     db.stock("O+")
     db.q("SET LOCAL ROLE vytal_app")
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.nurse),))
-    assert db.one("CALL allocate(%s)", (r,)) == 1
+    assert db.one("CALL allocate(%s)", (r,)) == 0 and db.groups_of(r) == ["O+"]      # the release topped it up (C15)
     assert db.one("CALL separate_donation(%s, ARRAY['RBC'])", (dn,)) == [f"U{dn}-RBC"]
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
     assert db.one("CALL quarantine_donor(%s)", (d,)) == 0
@@ -264,10 +267,11 @@ def test_a_donation_call_carries_only_the_template(db):
     """SE-07: calls contain no health information; staff cannot supply the text."""
     r = db.request("O-")
     db.donor("O-", screened=True)
-    cid = db.one("CALL send_donation_call(%s, %s, NULL, '2026-12-01')", (r, db.nurse))
+    day = db.one("SELECT clinic_date(required_by) FROM blood_request WHERE request_id = %s", (r,))   # DA-N4: at most that day
+    cid = db.one("CALL send_donation_call(%s, %s, NULL, %s)", (r, db.nurse, day))
     assert db.one("SELECT message FROM donation_call WHERE call_id = %s", (cid,)) == \
         "Riverside General is asking for donors to give red blood cells. Please book a donation at 1 River Rd on or " \
-        "before 1 Dec 2026. Accept or decline this call in Vytal."
+        f"before {day.day} {day:%b %Y}. Accept or decline this call in Vytal."
     assert db.q("SELECT DISTINCT message FROM notification WHERE message LIKE 'Riverside General is asking%%'") == \
         db.q("SELECT message FROM donation_call WHERE call_id = %s", (cid,))
 

@@ -152,9 +152,11 @@ class Seeder:
             self.q("SELECT set_config('vytal.user_id', %s, false)", (str(self.admin),))
             d["verified"] = True
         dtype = pick(rng, (("WB", .78), ("PLS", .10), ("PLT", .12)))
+        # apheresis draws 600 ml, capped at 15% of the donor's estimated blood volume as the donation trigger requires
         dn = self.one("INSERT INTO donation (donor_id,recorded_by,donation_type_code,donated_at,volume_ml,hemoglobin_gl) "
-                      "VALUES (%s,%s,%s,%s,%s,%s) RETURNING donation_id",
-                      (d["id"], staff, dtype, ts, 450 if dtype == "WB" else 600, round(min_hb + rng.uniform(2, 30), 1)))
+                      "SELECT %s,%s,%s,%s,least(%s, floor(0.15 * estimated_blood_volume_ml(o.sex, o.height_cm, o.weight_kg))),%s "
+                      "FROM donor o WHERE o.user_id = %s RETURNING donation_id",
+                      (d["id"], staff, dtype, ts, 450 if dtype == "WB" else 600, round(min_hb + rng.uniform(2, 30), 1), d["id"]))
         comps = {"WB": ["RBC", "PLASMA"] + (["PLT"] if rng.random() < .5 else []), "PLS": ["PLASMA"], "PLT": ["PLT"]}[dtype]
         tested = ts + dt.timedelta(hours=rng.uniform(6, 20))
         units = self.one("CALL separate_donation(%s, %s)", (dn, comps))

@@ -168,8 +168,8 @@ def test_hemoglobin_and_weight_checks_hold_on_the_tables(db):
 
 # ---------------------------------------------------------------------- issue 19: upper limits
 def test_limits_on_units_shelf_life_and_intervals(db):
-    assert "between 1 and 50" in db.fails("CALL submit_request(%s,'P-1','O+','RBC',51,'Routine',now()+interval '1 day')", (db.nurse,))
-    assert "between 1 and 50" in db.fails("CALL submit_request(%s,'P-1','O+','RBC',0,'Routine',now()+interval '1 day')", (db.nurse,))
+    assert "from 1 to 50" in db.fails("CALL submit_request(%s,'P-1','O+','RBC',51,'Routine',now()+interval '1 day')", (db.nurse,))
+    assert "from 1 to 50" in db.fails("CALL submit_request(%s,'P-1','O+','RBC',0,'Routine',now()+interval '1 day')", (db.nurse,))
     r = db.request("O+")
     assert "check" in db.fails("UPDATE blood_request SET units_requested = 500 WHERE request_id=%s", (r,))
     assert "between 1 and 1095" in db.fails("CALL set_shelf_life(%s,'RBC',5000)", (db.admin,))

@@ -32,10 +32,10 @@ def test_every_hash_has_its_own_salt():
 
 
 @pytest.mark.parametrize("password, ok", [
-    ("a" * MAX_BYTES, True),
-    ("a" * (MAX_BYTES + 1), False),
-    ("é" * 36, True),              # 36 characters, 72 bytes
-    ("é" * 37, False),             # 37 characters but 74 bytes: the limit is bytes, not characters
+    ("ab1" * (MAX_BYTES // 3), True),
+    ("ab1" * (MAX_BYTES // 3) + "c", False),
+    ("é" * 35 + "12", True),       # 37 characters, 72 bytes
+    ("é" * 36 + "1", False),       # 37 characters but 73 bytes: the limit is bytes, not characters
 ])
 def test_registration_refuses_passwords_bcrypt_would_truncate(password, ok, monkeypatch):
     def refuse(*a, **k):

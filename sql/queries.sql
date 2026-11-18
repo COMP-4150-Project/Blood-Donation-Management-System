@@ -1,4 +1,5 @@
 -- Vytal key queries. Each block runs as-is in psql against a seeded database (no parameters to fill in).
+-- Calendar days are the clinic's (clinic_date / clinic_today, America/Toronto); the session itself stays in UTC (DI-06).
 -- Header lines (name, title, serves, why) are read by vytal/queries.py for the tests, benchmark and report.
 SET search_path = vytal;
 
@@ -38,8 +39,8 @@ WITH target AS (
     WHERE status = 'Open' AND shortfall > 0
     ORDER BY urgency = 'Emergency' DESC, shortfall DESC, request_id LIMIT 1
 )
-SELECT t.request_id, e.donor_code, e.blood_group, last.donated_at::date AS last_donation,
-       CURRENT_DATE - last.donated_at::date AS days_since
+SELECT t.request_id, e.donor_code, e.blood_group, clinic_date(last.donated_at) AS last_donation,
+       clinic_today() - clinic_date(last.donated_at) AS days_since
 FROM target t
 CROSS JOIN LATERAL eligible_donors(t.request_id) e
 JOIN donor o USING (donor_code)
@@ -52,7 +53,7 @@ LIMIT 10;
 -- serves: FR-15, SE-07
 -- why: What a donor sees: when and where they gave and how many units were made, never who received them.
 WITH me AS (SELECT donor_id FROM donation GROUP BY donor_id ORDER BY count(*) DESC, donor_id LIMIT 1)
-SELECT o.donor_code, d.donated_at::date AS donated_on, f.name AS facility, dt.name AS donation_type,
+SELECT o.donor_code, clinic_date(d.donated_at) AS donated_on, f.name AS facility, dt.name AS donation_type,
        d.status, count(u.unit_id) AS units_made, string_agg(u.component_code, ', ' ORDER BY u.component_code) AS components
 FROM me
 JOIN donation d USING (donor_id)
@@ -72,8 +73,8 @@ WITH flagged AS (
     SELECT user_id FROM donor WHERE is_flagged
     ORDER BY (SELECT count(*) FROM donation WHERE donor_id = user_id) DESC, user_id LIMIT 1
 )
-SELECT o.donor_code, l.donation_id, l.donated_at::date AS donated_on, l.unit_id, l.component_code, l.status,
-       l.request_id, rf.name AS received_at, l.issued_at::date AS issued_on
+SELECT o.donor_code, l.donation_id, clinic_date(l.donated_at) AS donated_on, l.unit_id, l.component_code, l.status,
+       l.request_id, rf.name AS received_at, clinic_date(l.issued_at) AS issued_on
 FROM flagged g
 JOIN v_lookback l ON l.donor_id = g.user_id
 JOIN donor o ON o.user_id = l.donor_id
@@ -90,25 +91,25 @@ SELECT
     (SELECT count(*) FROM blood_request WHERE status = 'Open' AND urgency = 'Emergency') AS open_emergency,
     (SELECT count(*) FROM blood_request WHERE status = 'Open' AND urgency = 'Urgent') AS open_urgent,
     (SELECT count(*) FROM blood_request WHERE status = 'Open' AND urgency = 'Routine') AS open_routine,
-    (SELECT count(*) FROM stock_alert WHERE cleared_at IS NULL) AS open_alerts,
-    (SELECT count(*) FROM wastage_record WHERE cause = 'Expired' AND wasted_at >= date_trunc('month', now())) AS expired_this_month;
+    (SELECT count(*) FROM v_low_stock) AS open_alerts,                    -- C10: live, not waiting for the hourly job
+    (SELECT count(*) FROM wastage_record WHERE cause = 'Expired' AND wasted_at >= date_trunc('month', now(), clinic_tz())) AS expired_this_month;
 
 -- name: Q07
 -- title: Monthly wastage rate by component
 -- serves: FR-20, FR-34
 -- why: Wastage as a share of what was collected, with a 3-month rolling rate to smooth out small months.
 WITH made AS (
-    SELECT date_trunc('month', collected_at) AS month, component_code, count(*) AS units
+    SELECT date_trunc('month', clinic_date(collected_at))::date AS month, component_code, count(*) AS units
     FROM v_blood_unit GROUP BY 1, 2
 ), lost AS (
-    SELECT date_trunc('month', u.collected_at) AS month, u.component_code, count(*) AS units
+    SELECT date_trunc('month', clinic_date(u.collected_at))::date AS month, u.component_code, count(*) AS units
     FROM wastage_record w JOIN v_blood_unit u USING (unit_id) GROUP BY 1, 2
 )
-SELECT m.month::date, m.component_code, m.units AS collected, coalesce(l.units, 0) AS wasted,
+SELECT m.month, m.component_code, m.units AS collected, coalesce(l.units, 0) AS wasted,
        round(100.0 * coalesce(l.units, 0) / m.units, 1) AS wastage_pct,
        round(100.0 * sum(coalesce(l.units, 0)) OVER w / sum(m.units) OVER w, 1) AS rolling_3m_pct
 FROM made m LEFT JOIN lost l USING (month, component_code)
-WHERE m.month < date_trunc('month', now()) - interval '1 month'      -- recent units have not had time to expire
+WHERE m.month < (date_trunc('month', clinic_today()) - interval '1 month')::date      -- recent units have not had time to expire
 WINDOW w AS (PARTITION BY m.component_code ORDER BY m.month ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)
 ORDER BY m.component_code, m.month;
 
@@ -145,7 +146,7 @@ WITH supply AS (
     WHERE b.component_code = 'RBC' AND ru.issued_at > now() - interval '90 days' GROUP BY 1
 ), shelf AS (
     SELECT blood_group, count(*) AS available FROM v_blood_unit
-    WHERE component_code = 'RBC' AND status = 'Available' GROUP BY 1
+    WHERE component_code = 'RBC' AND status = 'Available' AND expires_at > now() GROUP BY 1
 )
 SELECT g.blood_group, coalesce(s.collected, 0) AS collected_90d, coalesce(d.requested, 0) AS requested_90d,
        coalesce(i.issued, 0) AS issued_90d, coalesce(sh.available, 0) AS on_shelf,
@@ -160,7 +161,7 @@ ORDER BY coalesce(d.requested, 0) DESC;
 -- serves: FR-07, FR-10
 -- why: Gaps between whole-blood donations against the minimum interval show how much donor capacity goes unused.
 WITH gaps AS (
-    SELECT o.sex, d.donated_at::date - lag(d.donated_at::date) OVER (PARTITION BY d.donor_id ORDER BY d.donated_at) AS gap_days
+    SELECT o.sex, clinic_date(d.donated_at) - lag(clinic_date(d.donated_at)) OVER (PARTITION BY d.donor_id ORDER BY d.donated_at) AS gap_days
     FROM donation d JOIN donor o ON o.user_id = d.donor_id
     WHERE d.donation_type_code = 'WB'
 )
@@ -178,13 +179,13 @@ ORDER BY g.sex;
 -- serves: FR-26
 -- why: Eligible donors who gave at least twice but not in the last 6 months, top 3 per group, the most widely transfusable groups first.
 WITH history AS (
-    SELECT donor_id, count(*) AS donations, max(donated_at)::date AS last_donation
+    SELECT donor_id, count(*) AS donations, clinic_date(max(donated_at)) AS last_donation
     FROM donation GROUP BY donor_id
 ), ranked AS (
     SELECT e.donor_code, e.blood_group, h.donations, h.last_donation,
            row_number() OVER (PARTITION BY e.blood_group ORDER BY h.donations DESC, h.last_donation) AS rank_in_group
     FROM history h JOIN v_donor_eligibility e ON e.user_id = h.donor_id
-    WHERE e.can_be_called AND h.donations >= 2 AND h.last_donation < CURRENT_DATE - 180
+    WHERE e.can_be_called AND h.donations >= 2 AND h.last_donation < clinic_today() - 180
 )
 SELECT r.blood_group, r.rank_in_group, r.donor_code, r.donations, r.last_donation
 FROM ranked r
@@ -220,6 +221,6 @@ SELECT r.reason_code, r.description, r.is_permanent,
        count(*) FILTER (WHERE d.recorded_by IS NOT NULL) AS by_staff,
        round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS share_pct
 FROM deferral d JOIN deferral_reason r USING (reason_code)
-WHERE d.start_date > CURRENT_DATE - 365
+WHERE d.start_date > clinic_today() - 365
 GROUP BY r.reason_code, r.description, r.is_permanent
 ORDER BY deferrals DESC;

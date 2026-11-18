@@ -4,7 +4,7 @@ import pytest
 from test_constraints import INSERT_DONATION
 
 def next_in(db, donor):
-    return db.one("SELECT next_eligible_date - CURRENT_DATE FROM donor WHERE user_id=%s", (donor,))
+    return db.one("SELECT next_eligible_date - clinic_today() FROM donor WHERE user_id=%s", (donor,))
 
 
 # ---------------------------------------------------------------------- FR-07 / FR-11 eligibility before a donation
@@ -69,11 +69,11 @@ def test_donation_keeps_the_group_measured_at_the_time(db):
 def test_deferral_rules_and_eligibility_dates(db):
     d = db.donor()
     assert "end date" in db.fails("INSERT INTO deferral (donor_id,reason_code,recorded_by) VALUES (%s,'TATTOO',%s)", (d, db.nurse))
-    assert "permanent" in db.fails("INSERT INTO deferral (donor_id,reason_code,end_date,recorded_by) VALUES (%s,'HBV',CURRENT_DATE+5,%s)", (d, db.nurse))
-    assert "check" in db.fails("INSERT INTO deferral (donor_id,reason_code,end_date) VALUES (%s,'TATTOO',CURRENT_DATE+1)", (d,))
-    db.q("INSERT INTO deferral (donor_id,reason_code,end_date,recorded_by) VALUES (%s,'TATTOO',CURRENT_DATE+90,%s)", (d, db.nurse))
+    assert "permanent" in db.fails("INSERT INTO deferral (donor_id,reason_code,end_date,recorded_by) VALUES (%s,'HBV',clinic_today()+5,%s)", (d, db.nurse))
+    assert "check" in db.fails("INSERT INTO deferral (donor_id,reason_code,end_date) VALUES (%s,'TATTOO',clinic_today()+1)", (d,))
+    db.q("INSERT INTO deferral (donor_id,reason_code,end_date,recorded_by) VALUES (%s,'TATTOO',clinic_today()+90,%s)", (d, db.nurse))
     assert next_in(db, d) == 90
-    db.q("UPDATE deferral SET start_date=CURRENT_DATE-100, end_date=CURRENT_DATE-1 WHERE donor_id=%s", (d,))
+    db.q("UPDATE deferral SET start_date=clinic_today()-100, end_date=clinic_today()-1 WHERE donor_id=%s", (d,))
     assert db.one("SELECT next_eligible_date FROM donor WHERE user_id=%s", (d,)) is None
     db.q("INSERT INTO deferral (donor_id,reason_code,recorded_by) VALUES (%s,'HBV',%s)", (d, db.nurse))
     assert db.one("SELECT next_eligible_date::text FROM donor WHERE user_id=%s", (d,)) == "infinity"
@@ -134,7 +134,7 @@ def test_positive_test_discards_flags_and_notifies(db):
     assert db.one("SELECT count(*) FROM wastage_record w JOIN blood_unit u USING (unit_id) WHERE donation_id=%s AND cause='Discarded'", (dn,)) == 2
     assert db.one("SELECT status FROM donation WHERE donation_id=%s", (dn,)) == "Discarded"
     assert db.one("SELECT is_flagged FROM donor WHERE user_id=%s", (d,))
-    assert db.one("SELECT count(*) FROM notification WHERE user_id=%s AND message LIKE %s", (db.admin, f"Donation {dn} failed%")) == 1
+    assert db.one("SELECT count(*) FROM notification WHERE user_id=%s AND message LIKE %s", (db.admin, f"Donation {dn} from donor % failed%")) == 1
 
 
 def test_wastage_recorded_once_per_unit(db):

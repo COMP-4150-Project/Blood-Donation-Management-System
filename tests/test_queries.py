@@ -86,12 +86,15 @@ def test_q06_overview_matches_raw_counts(sdb):
     by_urgency = dict(sdb.q("SELECT urgency, count(*) FROM blood_request WHERE status='Open' GROUP BY 1"))
     assert (o["open_emergency"], o["open_urgent"], o["open_routine"]) == \
         (by_urgency.get("Emergency", 0), by_urgency.get("Urgent", 0), by_urgency.get("Routine", 0))
-    assert o["open_alerts"] == sdb.one("SELECT count(*) FROM stock_alert WHERE cleared_at IS NULL")
+    # C10 / INT-11: shelves below their minimum now, a unit past its expiry time not counted even before the hourly job
+    assert o["open_alerts"] == sdb.one("SELECT count(*) FROM stock_threshold t WHERE t.min_units > (SELECT count(*) FROM blood_unit u "
+                                       "JOIN donation d USING (donation_id) WHERE u.facility_id = t.facility_id AND d.blood_group = t.blood_group "
+                                       "AND u.component_code = t.component_code AND u.status = 'Available' AND u.expires_at > now())")
 
 
 def test_q07_wastage_recomputed_in_python(sdb):
     made, lost = Counter(), Counter()
-    for month, comp, wasted in sdb.q("SELECT date_trunc('month', collected_at)::date, component_code, w.unit_id IS NOT NULL "
+    for month, comp, wasted in sdb.q("SELECT date_trunc('month', clinic_date(collected_at))::date, component_code, w.unit_id IS NOT NULL "
                                      "FROM v_blood_unit LEFT JOIN wastage_record w USING (unit_id)"):
         made[month, comp] += 1
         lost[month, comp] += wasted
@@ -120,4 +123,4 @@ def test_shares_add_up_to_100(sdb, name):
 def test_q11_only_lapsed_eligible_repeat_donors(sdb):
     for r in rows(sdb, "Q11"):
         assert r["donations"] >= 2 and r["rank_in_group"] <= 3
-        assert sdb.one("SELECT CURRENT_DATE - %s > 180", (r["last_donation"],))
+        assert sdb.one("SELECT clinic_today() - %s > 180", (r["last_donation"],))

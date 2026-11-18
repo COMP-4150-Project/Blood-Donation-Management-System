@@ -7,20 +7,20 @@
   --amber:#8A5100; --amber-soft:#FBEFD5; --green:#1A6E44; --green-soft:#DDF3E6;
   --shadow:0 1px 2px rgba(30,21,35,.06),0 8px 24px -12px rgba(30,21,35,.12); --shadow-lg:0 24px 60px -20px rgba(30,21,35,.35);
   --display:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; --body:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-  --r:14px; --ease:cubic-bezier(.22,.8,.24,1); --side:252px;
+  --scroll-cue:rgba(30,21,35,.24); --r:14px; --ease:cubic-bezier(.22,.8,.24,1); --side:252px;
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#150F18; --surface:#1E1623; --surface-2:#251C2B; --ink:#F3EEF5; --muted:#AFA4B7; --line:#352B3C; --line-2:#2B2231;
   --red:#F05E62; --red-text:#FF8A8D; --red-soft:#3A1A20; --on-red:#1A0B10;
   --teal:#38C3C3; --teal-text:#5ED8D8; --teal-soft:#10353A; --field:#8F8499; --on-teal:#04201F;
   --amber:#E9B454; --amber-soft:#3A2D12; --green:#5BC48A; --green-soft:#14301F;
-  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6); --shadow-lg:0 24px 60px -20px rgba(0,0,0,.8); color-scheme:dark}}
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6); --shadow-lg:0 24px 60px -20px rgba(0,0,0,.8); --scroll-cue:rgba(0,0,0,.75); color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#150F18; --surface:#1E1623; --surface-2:#251C2B; --ink:#F3EEF5; --muted:#AFA4B7; --line:#352B3C; --line-2:#2B2231;
   --red:#F05E62; --red-text:#FF8A8D; --red-soft:#3A1A20; --on-red:#1A0B10;
   --teal:#38C3C3; --teal-text:#5ED8D8; --teal-soft:#10353A; --field:#8F8499; --on-teal:#04201F;
   --amber:#E9B454; --amber-soft:#3A2D12; --green:#5BC48A; --green-soft:#14301F;
-  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6); --shadow-lg:0 24px 60px -20px rgba(0,0,0,.8); color-scheme:dark}
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6); --shadow-lg:0 24px 60px -20px rgba(0,0,0,.8); --scroll-cue:rgba(0,0,0,.75); color-scheme:dark}
 
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;scroll-padding-top:calc(var(--sideh,0px) + 76px)}
@@ -32,9 +32,11 @@ h1,h2,h3,h4{font-family:var(--display);margin:0;line-height:1.15;text-wrap:balan
 h1{font-size:clamp(1.7rem,3.2vw,2.3rem);font-weight:800} h2{font-size:1.25rem;font-weight:700} h3{font-size:1.02rem;font-weight:700}
 p{margin:0} a{color:var(--teal-text)} .muted{color:var(--muted)} .mono{font-family:var(--mono);font-size:max(.92em,.75rem)} .nowrap{white-space:nowrap}
 :focus-visible{outline:3px solid var(--teal);outline-offset:2px;border-radius:6px}
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.skip{position:absolute;left:12px;top:-60px;background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:8px;z-index:100;transition:top .2s var(--ease)}
-.skip:focus{top:10px}
+/* visually hidden but read aloud; clip-path and the negative margin keep it from widening anything, tables included */
+.sr{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;border:0!important;overflow:hidden!important;clip:rect(0 0 0 0)!important;clip-path:inset(50%)!important;white-space:nowrap!important}
+/* skip link: hidden until focused, then a bar in normal flow above the layout so it never covers the menu */
+.skip{position:absolute;left:0;top:0;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.skip:focus{position:static;display:block;width:auto;height:auto;margin:0;overflow:visible;clip-path:none;white-space:normal;padding:12px 16px;background:var(--ink);color:var(--bg);font-weight:600;text-align:center}
 
 /* ---------- logo ---------- */
 .logo{display:inline-flex;align-items:baseline;font:800 var(--ls,2rem)/1 var(--display);letter-spacing:-.035em;text-decoration:none;color:var(--teal-text);white-space:nowrap}
@@ -59,7 +61,7 @@ p{margin:0} a{color:var(--teal-text)} .muted{color:var(--muted)} .mono{font-fami
 .nav .label{font:500 .75rem var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:12px 12px 4px}
 .side .foot{margin-top:auto;display:grid;gap:10px;padding:12px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line)}
 .who{display:flex;gap:10px;align-items:center;min-width:0}
-.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;flex:none;font:800 .95rem var(--display);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.35);background:linear-gradient(135deg,var(--red),var(--teal))}
+.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;flex:none;font:800 .95rem var(--display);color:var(--on-red);background:linear-gradient(135deg,var(--red),var(--teal))}
 .who b{display:block;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.who small{color:var(--muted)}
 .main{min-width:0;display:flex;flex-direction:column}
 .top{display:flex;align-items:center;gap:12px;padding:16px clamp(16px,3vw,36px);position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid transparent}
@@ -83,13 +85,13 @@ body.leaving .main{opacity:0;transform:translateY(-6px);transition:opacity .16s 
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--red) 55%,transparent)}60%{box-shadow:0 0 0 9px transparent}}
 
 /* ---------- cards, grids ---------- */
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:20px;box-shadow:var(--shadow);min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:20px;box-shadow:var(--shadow);min-width:0;overflow-wrap:break-word}
 .card.lift{transition:transform .3s var(--ease),box-shadow .3s var(--ease)}.card.lift:hover{transform:translateY(-3px);box-shadow:0 2px 4px rgba(30,21,35,.06),0 18px 36px -16px rgba(30,21,35,.25)}
 .card>header,.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
 .grid{display:grid;gap:16px}.g2{grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))}.g3{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}
 .split{display:grid;gap:16px;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)}
 @media(max-width:1100px){.split{grid-template-columns:minmax(0,1fr)}}
-.stat{display:grid;gap:4px}.stat .n{font:800 2.2rem/1 var(--display);letter-spacing:-.03em;font-variant-numeric:tabular-nums}.stat .l{color:var(--muted);font-size:.86rem}
+.stat{display:grid;grid-template-columns:minmax(0,1fr);gap:4px}.stat .n{font:800 2.2rem/1 var(--display);letter-spacing:-.03em;font-variant-numeric:tabular-nums}.stat .l{color:var(--muted);font-size:.86rem}
 .stat.red .n{color:var(--red-text)}.stat.teal .n{color:var(--teal-text)}
 .hero-card{background:linear-gradient(135deg,color-mix(in srgb,var(--red) 10%,var(--surface)),color-mix(in srgb,var(--teal) 10%,var(--surface)));overflow:hidden;position:relative}
 
@@ -129,9 +131,40 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--teal);bo
 .pill.red{background:var(--red-soft);color:var(--red-text)}.pill.teal{background:var(--teal-soft);color:var(--teal-text)}.pill.amber{background:var(--amber-soft);color:var(--amber)}
 .pill.green{background:var(--green-soft);color:var(--green)}.pill.grey{background:var(--line-2);color:var(--muted)}.pill.pulse::before{animation:pulse 1.6s infinite}
 .bt{display:inline-grid;place-items:center;min-width:44px;height:28px;padding:0 8px;border-radius:8px;background:var(--red);color:var(--on-red);font:800 .82rem var(--display)}
-.tablewrap{position:relative;overflow-x:auto;border-radius:12px;margin:0 -4px;padding:0 4px}
+.tablewrap{position:relative;overflow-x:auto;border-radius:12px;margin:0 -4px;padding:0 4px;
+  background:linear-gradient(90deg,var(--surface) 50%,transparent) left/32px 100% no-repeat local,linear-gradient(270deg,var(--surface) 50%,transparent) right/32px 100% no-repeat local,
+  radial-gradient(farthest-side at 0 50%,var(--scroll-cue),transparent) left/12px 100% no-repeat scroll,radial-gradient(farthest-side at 100% 50%,var(--scroll-cue),transparent) right/12px 100% no-repeat scroll}
+.tablewrap:focus-visible{outline:3px solid var(--teal);outline-offset:2px;border-radius:12px}
+.tablewrap:focus:not(:focus-visible){outline:none}
+/* row actions stay in view while the rest of the table scrolls under them */
+@media(min-width:561px){
+  .tablewrap table:has(td:last-child :is(.btn,form,button,select)) tr>:last-child{position:sticky;right:0;z-index:1;background:var(--surface);transition:box-shadow .2s}
+  .tablewrap table:has(td:last-child :is(.btn,form,button,select)) tbody tr:hover>:last-child{background:var(--surface-2)}
+  .tablewrap.more-r table:has(td:last-child :is(.btn,form,button,select)) tr>:last-child{box-shadow:-10px 0 12px -10px var(--scroll-cue),inset 1px 0 0 var(--line)}
+}
+@media(max-width:1279.98px){.col-opt{display:none!important}}   /* below a 1280 laptop the optional columns give way (RSP-04) */
+td .sub{display:block;margin-top:2px;font-size:.78rem}
+/* audit log (RS-N02): fixed, sensible column widths so the table fits a 1280 laptop; long text is cut, not wrapped */
+table.audit td{vertical-align:top}
+table.audit .when{min-width:6.5rem}table.audit td.who{display:table-cell;width:9.5rem;max-width:9.5rem}
+table.audit .who .nm,table.audit .who .em{display:block}
+table.audit .who .em,table.audit .rec .sub{max-width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.8rem}
+table.audit .rec{max-width:8.5rem;overflow-wrap:anywhere}table.audit .fld{max-width:8.5rem}
+table.audit .v{width:9.5rem;max-width:9.5rem;overflow-wrap:anywhere}
+.av summary{position:relative;cursor:pointer;list-style:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:9.5rem}
+.av summary::-webkit-details-marker{display:none}
+.av summary .cut::after{content:"\2026";color:var(--muted)}
+.av summary:focus-visible{outline:3px solid var(--teal);outline-offset:2px;border-radius:4px}
+.av[open] summary{color:var(--teal-text)}.av[open] summary .cut::after{content:""}
+.av code{display:block;margin-top:6px;font:400 .78rem/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem;overflow:auto}
+/* inventory row action: reason and button side by side on wide screens, stacked in a narrow column on tablets (RSP-04) */
+.discard{display:flex;gap:8px;align-items:center}.discard select{min-height:34px;padding:4px 8px;width:150px}
+@media(max-width:1279.98px){.discard{flex-direction:column;align-items:stretch;width:9rem}.discard select{width:100%}}
+/* laptops: slightly tighter cells so common tables fit at 1280 without scrolling */
+@media(max-width:1440px){th,td{padding-left:9px;padding-right:9px}.tablewrap td:first-child,.tablewrap th:first-child{padding-left:8px}}
 table{width:100%;border-collapse:collapse;font-size:.92rem}
 th{font:500 .75rem var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:0 12px 10px;white-space:nowrap}
+td .btn,td.mono,td>.mono{white-space:nowrap}
 td{padding:12px;border-top:1px solid var(--line-2);vertical-align:middle}
 tbody tr{transition:background .2s}tbody tr:hover{background:var(--surface-2)}
 tr.reveal-row{animation:rise .5s var(--ease) both;animation-delay:calc(var(--r,0)*28ms)}
@@ -139,7 +172,7 @@ tr.reveal-row{animation:rise .5s var(--ease) both;animation-delay:calc(var(--r,0
 .empty svg{width:46px;height:46px;stroke:var(--line);fill:none;stroke-width:1.4}
 
 /* ---------- stock matrix, bars, rings ---------- */
-.matrix{width:100%;min-width:540px;border-collapse:separate;border-spacing:5px;table-layout:fixed}
+.matrix{width:100%;min-width:520px;border-collapse:separate;border-spacing:5px;table-layout:fixed}
 .matrix th,.matrix td{border:0;padding:0;background:none}.matrix tbody tr:hover{background:none}
 .matrix th[scope=col]{font:700 .8rem var(--display);text-align:center;color:var(--muted);vertical-align:bottom;padding-bottom:2px;letter-spacing:0;text-transform:none}
 .matrix thead td{width:84px}.matrix th[scope=row]{font:600 .875rem var(--body);text-align:left;white-space:nowrap;color:var(--ink);letter-spacing:0;text-transform:none}
@@ -154,7 +187,7 @@ tr.reveal-row{animation:rise .5s var(--ease) both;animation-delay:calc(var(--r,0
 .ring{--p:0;width:148px;height:148px;position:relative;flex:none}
 .ring svg{width:100%;height:100%;transform:rotate(-90deg)}.ring circle{fill:none;stroke-width:11;stroke-linecap:round}
 .ring .bg{stroke:var(--line)}.ring .fg{stroke:url(#ringGrad);stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset 1.4s var(--ease)}
-.ring .in{position:absolute;inset:0;display:grid;place-items:center;text-align:center;line-height:1.1}.ring .in b{font:800 1.9rem var(--display)}.ring .in>div{max-width:96px}.ring .in small{color:var(--muted);font-size:.75rem;max-width:92px;line-height:1.15;overflow-wrap:anywhere}
+.ring .in{position:absolute;inset:0;display:grid;place-items:center;text-align:center;line-height:1.1}.ring .in b{display:block;font:800 1.9rem/1.05 var(--display)}.ring .in>div{max-width:108px;display:grid;justify-items:center;gap:2px}.ring .in small{display:block;color:var(--muted);font-size:.75rem;max-width:104px;line-height:1.15;overflow-wrap:normal;word-break:normal;hyphens:manual;text-wrap:balance}
 .spark{display:flex;align-items:stretch;gap:8px;height:170px;padding-top:4px}
 .spark div{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:6px;text-align:center;font:500 .75rem var(--mono);color:var(--muted);min-width:0}
 .spark i{display:block;width:100%;height:calc((100% - 48px) * var(--k,0));min-height:4px;background:linear-gradient(180deg,var(--red),color-mix(in srgb,var(--red) 55%,var(--teal)));border-radius:7px 7px 3px 3px;transform-origin:bottom;animation:grow .8s var(--ease) both;animation-delay:calc(var(--i,0)*70ms)}
@@ -215,23 +248,34 @@ dialog[open] .sheet{animation:sheet .38s var(--ease) both}.sheet{background:var(
   .side .foot{margin:0;grid-template-columns:minmax(0,1fr) auto;align-items:center}
   .side .foot .btn{white-space:nowrap}
   .top{top:var(--sideh,58px)}
-  .public{grid-template-columns:minmax(0,1fr);height:auto;overflow:visible}.public .art{height:auto;min-height:46vh}.public .panel{height:auto;overflow:visible}
+  .public{grid-template-columns:minmax(0,1fr);height:auto;overflow:visible}.public .art{height:auto;min-height:0;gap:18px;padding:24px clamp(16px,5vw,40px)}.public .art h1{font-size:clamp(1.6rem,4.6vw,2.4rem);max-width:24ch}.public .panel{height:auto;overflow:visible}
 }
+@media(max-width:700px){.public .art .feat{display:none}.public .art h1{font-size:clamp(1.45rem,6.2vw,2rem);max-width:22ch}.public .art{gap:12px;padding-top:16px;padding-bottom:18px}
+  .public .art .logo img{height:3.6rem}.drop.a{width:140px;height:165px;top:-30px;right:-40px}.drop.b{display:none}.public .panel{padding:16px clamp(12px,4vw,24px) 32px}}
+@media(max-width:560px){.public .art p{display:none}.public .panel .card{padding:20px 18px}}
 @media(max-width:560px){.page-head{align-items:flex-start}.side .foot{grid-template-columns:minmax(0,1fr)}.stat .n{font-size:1.9rem}}
 @media(max-width:420px){.btn.block-sm{width:100%}.page{padding-left:14px;padding-right:14px}.top{padding-left:14px;padding-right:14px}}
 @media(max-width:1000px),(pointer:coarse){.btn.sm{min-height:44px}.cell{min-height:44px}}
 /* short screens (landscape phones): sticky bars would eat the viewport */
 @media(max-height:500px){.side,.top{position:static!important}html{scroll-padding-top:12px}[id]{scroll-margin-top:12px}.public .art,.public .panel{height:auto}.public{height:auto;overflow:visible}.js .side-panel{max-height:none;position:static;box-shadow:none}}
 /* touch screens: 16px fields stop iOS zooming in on focus */
-@media(pointer:coarse){input,select,textarea{font-size:1rem}}
+@media(pointer:coarse),(max-width:1000px){input,select,textarea,table input,table select,table textarea{font-size:1rem}}
 @media print{.side,.top,.toasts,.actions{display:none!important}.app{display:block}.card{box-shadow:none;break-inside:avoid}}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 .toasts .toast+.toast{margin-top:0}
 .demo-all{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;display:grid;gap:10px}.demo-all h3{margin:0}
-.demo-all summary{cursor:pointer;font-weight:600;padding:6px 0}.demo-all table{width:100%;border-collapse:collapse;font-size:.82rem;margin:6px 0 10px}
-.demo-all th{text-align:left;color:var(--muted);font-weight:600;padding:4px 8px}.demo-all td{padding:6px 8px;border-top:1px solid var(--line)}
-.demo-all tbody tr{cursor:pointer}.demo-all tbody tr:hover,.demo-all tbody tr:focus{background:var(--surface-2);outline:none}
-.demo-all code{font-size:.8rem;word-break:break-all}
+.demo-all{container-type:inline-size;min-width:0}
+.demo-all summary{cursor:pointer;font-weight:600;padding:6px 0;min-height:44px;display:list-item;line-height:32px}.demo-all table{width:100%;border-collapse:collapse;font-size:.85rem;margin:6px 0 10px;table-layout:auto}
+.demo-all th{text-align:left;color:var(--muted);font-weight:600;padding:4px 8px;white-space:nowrap}.demo-all td{padding:7px 8px;border-top:1px solid var(--line);overflow-wrap:normal;word-break:normal}
+.demo-all tbody tr{cursor:pointer}.demo-all tbody tr:hover{background:var(--surface-2)}
+.demo-all tbody tr:focus-visible{background:var(--surface-2);outline:3px solid var(--teal);outline-offset:-3px}
+.demo-all code{font-size:.82rem;white-space:nowrap;word-break:normal;overflow-wrap:normal}.demo-all td code{white-space:normal}
+.demo-all .note{color:var(--muted)}
+@container (max-width:520px){
+  .demo-all table,.demo-all tbody{display:block}.demo-all thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .demo-all tr{display:block;padding:8px 10px;border-top:1px solid var(--line);border-radius:8px}
+  .demo-all td{display:block;padding:0;border:0}.demo-all td.name,.demo-all td.note{display:inline;font-size:.8rem}.demo-all td.name{color:var(--ink)}.demo-all td.note::before{content:" \00B7  "}
+}
 [hidden]{display:none!important}
 
 /* final logo: transparent PNGs, light and dark versions */
@@ -241,3 +285,10 @@ dialog[open] .sheet{animation:sheet .38s var(--ease) both}.sheet{background:var(
 [data-theme="dark"] .logo .lg-dark,.dark-surface .logo .lg-dark,.public .art .logo .lg-dark{display:block}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .logo .lg-light{display:none}:root:not([data-theme="light"]) .logo .lg-dark{display:block}}
 .public .art .logo img{height:calc(var(--ls,2.6rem)*1.9)}
+
+/* without JS (RSP-01): bars and the eligibility ring show their server values straight away */
+html:not(.js) [data-w]{--w:calc(attr(data-w type(<number>),0) * 1%)}
+html:not(.js) .ring{--pp:attr(data-p type(<number>),0)}
+html:not(.js) .ring .fg{stroke-dashoffset:calc(326.7px * (1 - var(--pp) / 100))}
+html:not(.js) #theme{display:none}
+@media print{[data-w]{transition:none!important}}

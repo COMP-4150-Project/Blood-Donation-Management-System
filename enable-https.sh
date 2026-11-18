@@ -34,8 +34,11 @@ CID=$(docker ps --filter publish=80 --format '{{.ID}}' | head -1)
 IMG=$(docker inspect "$CID" --format '{{.Config.Image}}'); NAME=$(docker inspect "$CID" --format '{{.Name}}' | sed 's|^/||')
 echo "container $NAME image $IMG"
 docker rm -f "$CID" >/dev/null
-docker run -d --name "$NAME" --restart always -p 127.0.0.1:7860:7860 "$IMG" >/dev/null
+# behind Caddy the site is HTTPS only, so the session cookie is Secure (plain-HTTP runs set VYTAL_SECURE_COOKIE=0), and
+# Caddy is the only way in, so the sign-in throttle may trust the client address it forwards (VYTAL_TRUST_PROXY=1)
+docker run -d --name "$NAME" --restart always -p 127.0.0.1:7860:7860 -e VYTAL_SECURE_COOKIE=1 -e VYTAL_TRUST_PROXY=1 "$IMG" >/dev/null
 systemctl enable caddy >/dev/null 2>&1 || true
 systemctl restart caddy
 sleep 10
 echo "caddy: $(systemctl is-active caddy)"
+[ "$NAME" = vytal ] || echo "note: the daily reseed timer from deploy-vps.sh restarts the container named vytal; this one is $NAME"

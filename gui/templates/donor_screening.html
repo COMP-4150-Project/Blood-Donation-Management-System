@@ -8,18 +8,23 @@
 {% macro given(q) -%}{%- set k = 'q' ~ q.question_id -%}{%- set a = form.get(k) -%}{%- if a is none -%}{%- set a = ans.get(q.question_id, ans.get(q.question_id|string)) -%}{%- endif -%}{%- if a is sameas true or a == 'yes' -%}yes{%- elif a is sameas false or a == 'no' -%}no{%- endif -%}{%- endmacro %}
 {% for q in qs %}{% if not ('pregnan' in q.question_text|lower and sx == 'M') %}{% if submitted and given(q)|trim == '' %}{% set _ = ns.missing.append(q.question_id) %}{% endif %}{% endif %}{% endfor %}
 <div class="page-head"><div><h1>Health screening</h1><p>Answer honestly. Your answers are private to you and the clinic team, and they decide whether you can donate today.</p></div></div>
+{% if permanent|default(false) %}<div class="card" style="max-width:760px"><h2 class="h3">A screening is not needed</h2>
+ <p style="margin-top:8px">You are permanently deferred, so you are unable to donate and do not need to answer the screening questions. If you have questions, please speak to the clinic team or Canadian Blood Services.</p>
+ <div class="actions" style="margin-top:14px"><a class="btn ghost" href="{{ url_for('donor_home') }}">Back to my donations</a></div></div>
+{% else %}
 <form class="card" method="post" style="display:grid;gap:4px;max-width:760px" novalidate>
- {{ m.csrf_field() }}
- {% if ns.missing %}<div class="ferr" role="alert" id="miss">Please answer every question. Your other answers are kept. Still to answer: {% for q in qs %}{% if q.question_id in ns.missing %}{{ q.question_text }}{{ '; ' if not loop.last and ns.missing|length > 1 else '' }}{% endif %}{% endfor %}</div>{% endif %}
+ {{ m.csrf_field() }}{% if once|default('') %}<input type="hidden" name="_once" value="{{ once }}">{% endif %}
+ {% if ns.missing %}<div class="ferr" role="alert" id="miss">Please answer every question. Your other answers are kept. Still to answer: {{ qs|selectattr('question_id', 'in', ns.missing)|map(attribute='question_text')|join(' ') }}</div>{% endif %}
  {% for q in qs %}
  {% if 'pregnan' in q.question_text|lower and sx == 'M' %}<input type="hidden" name="q{{ q.question_id }}" value="no">
  {% else %}{% set ns.n = ns.n + 1 %}{% set g = given(q)|trim %}{% set miss = q.question_id in ns.missing %}
- <fieldset {% if miss %}aria-describedby="m{{ q.question_id }}"{% endif %} style="border:0;padding:16px 0;margin:0;border-top:{{ '0' if ns.n == 1 else '1px solid var(--line-2)' }};display:grid;gap:10px">
+ <div style="padding:16px 0;border-top:{{ '0' if ns.n == 1 else '1px solid var(--line-2)' }}">
+ <fieldset {% if miss %}aria-describedby="m{{ q.question_id }}"{% endif %} style="border:0;padding:0;margin:0;display:grid;gap:10px;min-width:0">
   <legend style="font-weight:600;padding:0 0 8px">{{ ns.n }}. {{ q.question_text }}</legend>
   <div class="chips">
    <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="yes" required {% if g == 'yes' %}checked{% endif %}><span>Yes</span></label>
    <label class="chip"><input type="radio" name="q{{ q.question_id }}" value="no" {% if g == 'no' %}checked{% endif %}><span>No</span></label>
-  </div>{% if miss %}<div class="ferr" id="m{{ q.question_id }}">Please answer this question.</div>{% endif %}</fieldset>{% endif %}{% endfor %}
+  </div>{% if miss %}<div class="ferr" id="m{{ q.question_id }}">Please answer this question.</div>{% endif %}</fieldset></div>{% endif %}{% endfor %}
  <div class="actions" style="margin-top:8px"><button class="btn red" type="submit">Submit answers</button><a class="btn ghost" href="{{ url_for('donor_home') }}">Cancel</a></div>
-</form>
+</form>{% endif %}
 {% endblock %}

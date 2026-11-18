@@ -12,6 +12,6 @@ A Flask web app on top of the Step 4 database and `vytal/services.py`. It has th
 
 **How it maps to the rubric:** Create, read, update and delete (nothing is destroyed: delete is cancel request, discard unit, deactivate account or facility, so the audit trail stays whole); three roles enforced by the database and the app; every screen reads and writes the real PostgreSQL database through stored procedures.
 
-**Requirements covered (Step 2 US-01 to US-08):** an Emergency request takes dashboard, new request, submit (3 screens); donors see eligibility first; status and urgency use text with colour; errors show next to the field; keyboard and contrast friendly; works at 1366x768 and tablet widths; destructive actions ask for confirmation.
+**Requirements covered (Step 2 US-01 to US-08):** an Emergency request takes dashboard, new request, submit (3 screens); donors see eligibility first; status and urgency use text with colour; errors show next to the field; keyboard and contrast friendly; works at 1366x768, tablet and phone widths (below 1280 px low-priority table columns, marked `col-opt`, are hidden; the request queue keeps request number, group, component, time needed and status, row actions stay pinned at the right edge, and wide tables scroll inside a keyboard-focusable region with an edge shadow); headline numbers are in the HTML and only animated when JavaScript runs and reduced motion is off; destructive actions ask for confirmation.
 
 Tests: `pytest tests/test_gui.py`. Screenshots: `gui/screenshots/`.

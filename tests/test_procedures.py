@@ -56,8 +56,8 @@ def test_plasma_compatibility_is_reversed(db):
     db.stock("O+", comps=("PLASMA",))
     r = db.request("AB+", comp="PLASMA")
     assert db.one("CALL allocate(%s)", (r,)) == 0
-    db.stock("AB+", comps=("PLASMA",))
-    assert db.one("CALL allocate(%s)", (r,)) == 1
+    db.stock("AB+", comps=("PLASMA",))            # C15: released AB+ plasma goes to the short request at once
+    assert db.groups_of(r) == ["AB+"] and db.one("CALL allocate(%s)", (r,)) == 0
 
 
 def test_only_units_at_the_requesting_facility(db):
@@ -151,7 +151,7 @@ def test_low_hemoglobin_defers_instead_of_donating(db):
     db.screen(d)
     assert db.one("CALL record_donation(%s,%s,'WB',450,120)", (d, db.nurse)) is None
     assert db.one("SELECT count(*) FROM donation WHERE donor_id=%s", (d,)) == 0
-    assert db.q("SELECT reason_code, end_date - CURRENT_DATE FROM deferral WHERE donor_id=%s", (d,)) == [("LOWHB", 56)]
+    assert db.q("SELECT reason_code, end_date - clinic_today() FROM deferral WHERE donor_id=%s", (d,)) == [("LOWHB", 56)]
     ok = db.donor(sex="F")
     db.screen(ok)
     assert db.one("CALL record_donation(%s,%s,'WB',450,130)", (ok, db.nurse)) is not None
@@ -173,7 +173,7 @@ def test_quarantine_pulls_available_and_reserved_units(db):
 def test_donor_search_matches_and_hides_contact_details(db):
     ok, deferred, wrong_group, light = (db.donor(g, kg=kg, screened=True) for g, kg in (("O-", 70), ("O-", 70), ("A+", 70), ("O-", 45)))
     unscreened = db.donor("O-")                                                           # UC-05 2a: no screening on record
-    db.q("INSERT INTO deferral (donor_id,reason_code,end_date,recorded_by) VALUES (%s,'TRAVEL',CURRENT_DATE+30,%s)", (deferred, db.nurse))
+    db.q("INSERT INTO deferral (donor_id,reason_code,end_date,recorded_by) VALUES (%s,'TRAVEL',clinic_today()+30,%s)", (deferred, db.nurse))
     r = db.request("O-")
     db.cur.execute("SELECT * FROM eligible_donors(%s)", (r,))
     assert [c.name for c in db.cur.description] == ["donor_code", "blood_group", "next_eligible_date"]
@@ -188,12 +188,12 @@ def test_register_donor_is_unverified_with_generated_code(db):
     d = db.donor("AB-", verified=False)
     code, group, verified = db.q("SELECT donor_code, blood_group, verified_by FROM donor WHERE user_id=%s", (d,))[0]
     assert re.fullmatch(r"D-\d{4,}", code) and (group, verified) == ("AB-", None)
-    assert "unique" in db.fails("CALL register_donor('NURSE@v.ca','x','A','B',NULL,'1990-01-01','F',60,165,NULL,NULL)")
+    assert "already registered" in db.fails("CALL register_donor('NURSE@v.ca','x','A','B',NULL,'1990-01-01','F',60,165,NULL,NULL)")
 
 
 def test_create_staff_needs_an_active_facility(db):
     db.q("UPDATE facility SET is_active=FALSE WHERE facility_id=%s", (db.fac_b,))
-    assert "inactive" in db.fails("CALL create_staff(%s,'s@v.ca','x','A','B',%s,'Nurse')", (db.admin, db.fac_b))
+    assert "choose an active facility" in db.fails("CALL create_staff(%s,'s@v.ca','x','A','B',%s,'Nurse')", (db.admin, db.fac_b))
 
 
 def test_lockout_after_five_failures_and_reset_on_success(db):
@@ -226,7 +226,7 @@ def test_clean_screening_creates_no_deferral(db):
 def test_deferring_answer_creates_a_system_deferral(db):
     d = db.donor()
     sid = db.one("CALL submit_screening(%s,%s)", (d, answers(db, TATTOO=True)))
-    assert db.q("SELECT reason_code, end_date - CURRENT_DATE, screening_id FROM deferral WHERE donor_id=%s", (d,)) == [("TATTOO", 90, sid)]
+    assert db.q("SELECT reason_code, end_date - clinic_today(), screening_id FROM deferral WHERE donor_id=%s", (d,)) == [("TATTOO", 90, sid)]
     assert db.one("SELECT status FROM v_donor_eligibility WHERE user_id=%s", (d,)).startswith("Not eligible until")
 
 
@@ -234,7 +234,7 @@ def test_deferring_answer_creates_a_system_deferral(db):
 def test_medication_and_pregnancy_questions_defer(db, reason, days):
     d = db.donor(sex="F")
     db.one("CALL submit_screening(%s,%s)", (d, answers(db, **{reason: True})))
-    assert db.q("SELECT reason_code, end_date - CURRENT_DATE FROM deferral WHERE donor_id=%s", (d,)) == [(reason, days)]
+    assert db.q("SELECT reason_code, end_date - clinic_today() FROM deferral WHERE donor_id=%s", (d,)) == [(reason, days)]
 
 
 def test_unanswered_questions_rejected(db):
@@ -243,7 +243,7 @@ def test_unanswered_questions_rejected(db):
 
 @pytest.mark.parametrize("setup, expected", [
     ("", "Eligible"),
-    ("UPDATE donor SET is_flagged=TRUE WHERE user_id=%(d)s", "Not eligible (flagged after a failed test)"),
+    ("UPDATE donor SET is_flagged=TRUE WHERE user_id=%(d)s", "Not eligible (flagged for a lookback investigation)"),   # ADM-14
     ("UPDATE donor SET weight_kg=45 WHERE user_id=%(d)s", "Not eligible (under 50 kg)"),
     ("UPDATE user_account SET is_active=FALSE WHERE user_id=%(d)s", "Account inactive"),
     ("INSERT INTO deferral (donor_id,reason_code,recorded_by) VALUES (%(d)s,'HIV',%(s)s)", "Permanently deferred"),
@@ -257,16 +257,16 @@ def test_eligibility_status_labels(db, setup, expected):
 
 def test_under_the_minimum_age_shows_the_birthday(db):
     """A 17-year-old who registered before an Admin raised the minimum to 18 sees the date they become eligible."""
-    d = db.one("CALL register_donor('kid@v.ca','x','A','B',NULL,(CURRENT_DATE - interval '17 years')::date,'F',60,165,NULL,'O+')")
+    d = db.one("CALL register_donor('kid@v.ca','x','A','B',NULL,(clinic_today() - interval '17 years')::date,'F',60,165,NULL,'O+')")
     db.q("UPDATE eligibility_rule SET min_age_years = 18")
     assert db.one("SELECT status FROM v_donor_eligibility WHERE user_id=%s", (d,)) == \
-        "Not eligible until " + str(db.one("SELECT (CURRENT_DATE + interval '1 year')::date"))
+        "Not eligible until " + str(db.one("SELECT (clinic_today() + interval '1 year')::date"))
 
 
 @pytest.mark.parametrize("years, refused", [(15, True), (16, True), (17, False)])
 def test_registration_refuses_donors_under_the_minimum_age(db, years, refused):
     """UC-01 2b / BR-01: the minimum age comes from eligibility_rule; exactly 17 today is accepted."""
-    sql = ("CALL register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,'M',70,178,NULL,'O+')")
+    sql = ("CALL register_donor(%s,'x','A','B',NULL,(clinic_today() - make_interval(years => %s))::date,'M',70,178,NULL,'O+')")
     msg = db.fails(sql, (f"age{years}@v.ca", years))
     assert ("at least 17 years old" in msg) if refused else msg == ""
 
@@ -304,7 +304,7 @@ def test_positive_result_reports_discarded(db):
 
 # ---------------------------------------------------------------------- send_donation_call() / respond_to_call() FR-26 / FR-27
 def eligibility(db, d, on=None):
-    return db.q("SELECT status, eligible_from, reason FROM donor_eligibility(%s, coalesce(%s::date, CURRENT_DATE))", (d, on))[0]
+    return db.q("SELECT status, eligible_from, reason FROM donor_eligibility(%s, coalesce(%s::date, clinic_today()))", (d, on))[0]
 
 
 def test_eligibility_function_answers_for_any_date(db):
@@ -367,7 +367,7 @@ def test_temporary_deferral_shows_its_end_date_and_reason(db):
     """FR-07: 'Not eligible until a date' with the reason; eligible again on that date (Scenario 2)."""
     d = db.donor()
     db.one("CALL submit_screening(%s,%s)", (d, answers(db, TATTOO=True)))
-    until = db.one("SELECT CURRENT_DATE + 90")
+    until = db.one("SELECT clinic_today() + 90")
     assert eligibility(db, d) == (f"Not eligible until {until}", until, "Tattoo or piercing in the last 3 months")
     assert eligibility(db, d, until)[0] == "Eligible"
 
@@ -379,7 +379,7 @@ def test_permanent_deferral_and_interval_reasons(db):
     gave = db.donor(screened=True)
     db.donate(gave)
     assert eligibility(db, gave)[2] == "Minimum interval since the last donation"
-    kid = db.one("CALL register_donor('kid2@v.ca','x','A','B',NULL,(CURRENT_DATE - interval '17 years')::date,'F',60,165,NULL,'O+')")
+    kid = db.one("CALL register_donor('kid2@v.ca','x','A','B',NULL,(clinic_today() - interval '17 years')::date,'F',60,165,NULL,'O+')")
     db.q("UPDATE eligibility_rule SET min_age_years = 18")          # an Admin raises the minimum (MA-01)
     assert eligibility(db, kid)[2] == "Donors must be at least 18"
 
@@ -431,7 +431,7 @@ def test_donor_answers_once(db):
     call = db.one("CALL send_donation_call(%s,%s)", (db.request("O-"), db.nurse))
     db.q("CALL respond_to_call(%s,%s,TRUE)", (call, d))
     assert db.one("SELECT response FROM call_recipient WHERE call_id=%s", (call,)) == "Accepted"
-    assert "no pending call" in db.fails("CALL respond_to_call(%s,%s,FALSE)", (call, d))
+    assert "already answered" in db.fails("CALL respond_to_call(%s,%s,FALSE)", (call, d))
 
 
 # ---------------------------------------------------------------------- run_nightly_expiry() procedure FR-20
@@ -464,9 +464,9 @@ def test_quarantine_reallocates_the_open_request_it_robbed(db):
 def test_staff_record_temporary_and_permanent_deferrals(db):
     d = db.donor()
     db.one("CALL record_deferral(%s,%s,'TRAVEL')", (db.nurse, d))
-    assert db.one("SELECT end_date - CURRENT_DATE FROM deferral WHERE donor_id=%s", (d,)) == 90   # reason's default length
-    db.one("CALL record_deferral(%s,%s,'TATTOO',CURRENT_DATE + 120)", (db.nurse, d))
-    assert db.one("SELECT next_eligible_date - CURRENT_DATE FROM donor WHERE user_id=%s", (d,)) == 120
+    assert db.one("SELECT end_date - clinic_today() FROM deferral WHERE donor_id=%s", (d,)) == 90   # reason's default length
+    db.one("CALL record_deferral(%s,%s,'TATTOO',clinic_today() + 120)", (db.nurse, d))
+    assert db.one("SELECT next_eligible_date - clinic_today() FROM donor WHERE user_id=%s", (d,)) == 120
     db.one("CALL record_deferral(%s,%s,'HIV')", (db.nurse, d))
     assert db.one("SELECT status FROM v_donor_eligibility WHERE user_id=%s", (d,)) == "Permanently deferred"
 
@@ -474,7 +474,7 @@ def test_staff_record_temporary_and_permanent_deferrals(db):
 @pytest.mark.parametrize("actor, reason, end, needle", [
     ("donor", "TRAVEL", None, "staff access only"),
     ("admin", "TRAVEL", None, "staff access only"),
-    ("nurse", "NOPE", None, "unknown deferral reason"),
+    ("nurse", "NOPE", None, "choose a deferral reason from the list"),
     ("nurse", "HIV", "2030-01-01", "permanent deferral reason cannot have an end date"),
 ])
 def test_record_deferral_refusals(db, actor, reason, end, needle):
@@ -591,7 +591,7 @@ def test_donor_updates_their_profile_and_it_is_audited(db):
 def test_permanently_deferred_donor_cannot_screen(db):
     d = db.donor()
     db.q("CALL record_deferral(%s,%s,'HBV')", (db.nurse, d))
-    assert "permanently deferred" in db.fails("CALL submit_screening(%s,%s)", (d, answers(db)))
+    assert "has a permanent deferral" in db.fails("CALL submit_screening(%s,%s)", (d, answers(db)))
 
 
 def test_call_responses_accept_decline_and_closed(db):
@@ -599,12 +599,14 @@ def test_call_responses_accept_decline_and_closed(db):
     yes, no, late = (db.donor("O-", screened=True) for _ in range(3))
     r = db.request("O-")
     call = db.one("CALL send_donation_call(%s,%s)", (r, db.nurse))
-    assert db.one("CALL respond_to_call(%s,%s,TRUE)", (call, yes)) == "Riverside General, 1 River Rd, 519-555-0111"
-    assert db.one("CALL respond_to_call(%s,%s,FALSE)", (call, no)) == "declined"
+    assert db.one("CALL respond_to_call(%s,%s,TRUE)", (call, yes)) == \
+        "Thank you. Please come to Riverside General, 1 River Rd. Phone 519-555-0111."
+    assert db.one("CALL respond_to_call(%s,%s,FALSE)", (call, no)) == "Thank you for letting us know."
     db.q("CALL close_request(%s, TRUE)", (r,))
-    assert db.one("CALL respond_to_call(%s,%s,TRUE)", (call, late)) == "closed"
+    # UC-20 2a / DON-16: a closed request is refused, so the donor is told no donation is needed
+    assert "call: this request is no longer open" in db.fails("CALL respond_to_call(%s,%s,TRUE)", (call, late))
     assert db.one("SELECT response FROM call_recipient WHERE call_id=%s AND donor_id=%s", (call, late)) == "Pending"
-    assert "no pending call" in db.fails("CALL respond_to_call(0,%s,TRUE)", (yes,))
+    assert "call: this call was not found" in db.fails("CALL respond_to_call(0,%s,TRUE)", (yes,))
 
 
 # ---------------------------------------------------------------------- verify_blood_group / submit_request / confirm_request_group

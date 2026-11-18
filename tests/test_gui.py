@@ -158,8 +158,7 @@ def test_donor_registers_screens_edits_profile_and_changes_password(app, gui_db)
     r = b.get("/register")
     assert "at least" in r.text or "Become a donor" in r.text
     r = b.post("/register", form)
-    assert r.status_code == 302 and "/login" in r.headers["Location"]
-    b.login("nora.test@mail.ca", "a-long-password-1")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/donor")          # UC-01 step 3: signed in straight away
     home = b.get("/donor").text
     assert "Complete screening" in home and "Nora" in home
     questions = re.findall(r'name="q(\d+)" value="no"', b.get("/donor/screening").text)
@@ -303,7 +302,7 @@ def test_admin_lookback_quarantine_and_expiry(admin, gui_db):
     csv = admin.get("/admin/lookback.csv?code=D-1042")
     assert csv.status_code == 200 and csv.mimetype == "text/csv"
     admin.post("/admin/lookback/quarantine", {"code": "D-1059"})
-    assert any("Quarantine" in m for m in admin.flashes())
+    assert any("quarantined" in m.lower() for m in admin.flashes())
     admin.post("/admin/lookback/clear", {"code": "D-1059", "note": "Repeat test negative"})
     admin.post("/admin/expiry", {})
     assert any("Expiry job" in m for m in admin.flashes())
@@ -394,7 +393,7 @@ def test_donor_home_gets_status_and_closed_calls(app, staff, gui_db):           
     ctx = [c for n, c in seen if n == "donor_home.html"][0]
     assert isinstance(ctx["elig_status"], str) and ctx["elig_status"] and call_id in ctx["closed_calls"]
     d.post(f"/donor/calls/{call_id}", {"answer": "accept"})
-    assert any("This call has closed, thank you" in m for m in d.flashes())
+    assert any(re.search(r"call has closed|no longer open", m) for m in d.flashes()), d.flashes()                # C9 wording
 
 
 def test_required_fields_are_trimmed_and_refused(staff, admin, gui_db):                      # issue 8
@@ -528,9 +527,9 @@ def _staff_id(app):
 
 def test_audit_to_date_is_inclusive_and_pages(app, admin, gui_db):                            # issue 23
     from gui.app import _audit_filters
-    f = _audit_filters({"until": "2026-05-01", "since": "2026-04-01"})
-    assert f["until"] == _dt.datetime(2026, 5, 2, tzinfo=_dt.timezone.utc) and f["since"] == _dt.datetime(2026, 4, 1, tzinfo=_dt.timezone.utc)
-    assert _audit_filters({"until": "2026-05-01T10:30"})["until"].hour == 10
+    with app.test_request_context("/admin/audit"):
+        f, ok = _audit_filters({"until": "2026-05-01", "since": "2026-04-01"})
+    assert ok and f["until"] == _dt.date(2026, 5, 1) and f["since"] == _dt.date(2026, 4, 1)      # plain clinic days, both included (C2)
     admin.post("/admin/rules/shelf", {"component": "PLT", "days": "6"})
     today = _dt.date.today().isoformat()
     page = admin.get(f"/admin/audit?table=component_type&since={today}&until={today}")
@@ -613,7 +612,7 @@ def test_csv_cells_are_neutralised():                                           
 
 def test_password_strength_and_body_size(app, admin):                                         # issue 28
     admin.post("/admin/users/create", {"role": "Staff", "facility_id": "2", "first_name": "Num", "last_name": "Pass", "email": "num.pass@essex.example.ca", "password": "12345678901234"})
-    assert any("letters or symbols" in m for m in admin.flashes())
+    assert any("letter and one digit" in m for m in admin.flashes()), admin.flashes()                 # C4 wording
     r = admin.c.post("/admin/expiry", data={"_csrf": admin.token_for_session(), "pad": "x" * (2 * 1024 * 1024)})
     assert r.status_code == 413
 
@@ -671,8 +670,7 @@ def _new_donor(app, email, weight="70", height="175", sex="M"):
     b = Browser(app)
     b.post("/register", {"first_name": "Tess", "last_name": "Banner", "email": email, "phone": "", "date_of_birth": "1992-03-04", "sex": sex,
                          "weight_kg": weight, "height_cm": height, "address": "1 Main St, Windsor", "blood_group": "A+",
-                         "password": "a-long-password-1", "password2": "a-long-password-1"})
-    b.login(email, "a-long-password-1")
+                         "password": "a-long-password-1", "password2": "a-long-password-1"})      # UC-01 step 3: signed in already
     qs = re.findall(r'name="q(\d+)" value="no"', b.get("/donor/screening").text)
     b.post("/donor/screening", healthy(qs))
     return b
@@ -722,7 +720,7 @@ def test_dashboard_banner_follows_a_height_edit_to_low_blood_volume(app):
     b.post("/profile", {"email": "banner.volume@mail.ca", "phone": "", "address": "1 Main St", "weight_kg": "51", "height_cm": "146"})
     page = b.get("/donor").text
     _assert_not_eligible_banner(page, "estimated blood volume")
-    assert "3.0 L" in page and "2.9 L" in page or "3.0 L" in page
+    assert re.search(r"\d,\d{3} ml, under the 3,\d{3} ml minimum", page)                         # C11: whole ml, never rounded litres
 
 
 def test_dashboard_banner_for_a_temporary_deferral(app, gui_db):
@@ -747,11 +745,11 @@ def test_dashboard_banner_for_a_permanent_deferral(app, gui_db):
 
 
 def test_dashboard_banner_for_other_not_eligible_reasons(app, gui_db):
-    for email, part in (("elif.demir@mail.ca", "test"), ("theo.dubois@mail.ca", "50 kg"), ("aisha.rahman@mail.ca", "blood volume")):
-        page = Browser(app).login(email).get("/donor").text
+    for email, part in (("elif.demir@mail.ca", r"test|being reviewed"), ("theo.dubois@mail.ca", "50 kg"), ("aisha.rahman@mail.ca", "blood volume")):
+        page = Browser(app).login(email).get("/donor").text                # C11: a lookback hold reads differently from a failed test
         head, text, hero = _banner(page)
         assert "not eligible" in head.lower(), (email, head)
-        assert part in text, (email, text)
+        assert re.search(part, text), (email, text)
         for w in ELIGIBLE_WORDS:
             assert w not in text
 
@@ -769,7 +767,7 @@ def test_donor_form_flows_for_height(app):
         assert re.search(r"100 and 250|enter a number|height", b.flashes()[-1].lower()), (bad, b.flashes())
     assert b.post("/register", form).status_code == 302
     c = Browser(app).login("hal.tall@mail.ca", "a-long-password-1")
-    assert 'name="height_cm"' in c.get("/profile").text and 'value="180.0"' in c.get("/profile").text
+    assert 'name="height_cm"' in c.get("/profile").text and 'value="180"' in c.get("/profile").text
     for bad in ("", "abc", "99", "251"):
         c.post("/profile", {"email": "hal.tall@mail.ca", "phone": "", "address": "1 Main St", "weight_kg": "80", "height_cm": bad})
         assert re.search(r"100 and 250|enter a number|height", c.flashes()[-1].lower()), (bad, c.flashes())
@@ -781,7 +779,7 @@ def test_donor_form_flows_for_height(app):
 
 def test_staff_donor_header_shows_body_size_and_volume(staff):
     page = staff.get("/staff/donors/101").text
-    assert re.search(r"\d+ years · Male · \d+ cm · \d+ kg · BMI \d+\.\d · est\. blood volume \d\.\d L", page)
+    assert re.search(r"\d+ years · Male · \d+ cm · \d+ kg · BMI \d+\.\d · est\. blood volume \d,\d{3} ml", page)
     assert staff.get("/staff/donors").status_code == 200 and staff.get("/staff/donors?q=D-10").status_code == 200
 
 

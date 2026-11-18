@@ -32,6 +32,7 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `tests/` | pytest suite (unit, integration, concurrency, security, data integrity) |
 | `bench/` | Performance benchmark (`bench.py`), per-index evidence (`index_ablation.py`) and the bulk-data generator |
 | `ops/` | Runnable nightly expiry and backup scripts, with a crontab example |
+| `Dockerfile`, `docker/`, `deploy-vps.sh`, `enable-https.sh` | Hosted demo: one container with PostgreSQL and the GUI, VPS deploy, HTTPS with Caddy, daily 04:00 (Toronto) reseed. See `DEMO.md` |
 
 ---
 
@@ -190,10 +191,12 @@ PGDATABASE=vytal ./ops/nightly_expiry.sh
 PGDATABASE=vytal ./ops/backup.sh backups
 ```
 
+Run it hourly (as `ops/crontab.example` does, and as the demo container does by itself): stock counts, low-stock lists and allocation already leave out a unit past its expiry time, and the hourly run marks such units Expired so the stored alerts and short requests follow. The GUI's sign-in throttle reads `X-Forwarded-For` only when `VYTAL_TRUST_PROXY=1`, which is meant for a run behind a reverse proxy that is the only way in (see DEMO.md).
+
 If the `pg_cron` extension is installed, the expiry job can be scheduled inside the database instead:
 
 ```sql
-SELECT cron.schedule('vytal-expiry', '5 0 * * *', 'CALL vytal.run_nightly_expiry()');
+SELECT cron.schedule('vytal-expiry', '5 * * * *', 'CALL vytal.run_nightly_expiry()');
 ```
 
 ---

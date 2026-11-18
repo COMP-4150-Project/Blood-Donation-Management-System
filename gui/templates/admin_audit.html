@@ -1,17 +1,26 @@
 {% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Audit log{% endblock %}{% block crumb %}Audit log{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Audit log</h1><p>Every change to sensitive data, who made it and when. The log can be read and exported but never edited.</p></div><a class="btn ghost" href="{{ url_for('admin_audit_csv', **f) }}">Export CSV</a></div>
+<div class="page-head"><div><h1>Audit log</h1><p>Every change to sensitive data, who made it and when. The log can be read and exported but never edited. Dates are clinic days (Ontario time), both ends included.</p></div><a class="btn ghost" href="{{ url_for('admin_audit_csv', **f) }}">Export CSV</a></div>
 <form class="card" method="get"><div class="form-grid">
- <div class="field"><label for="au">User id</label><input id="au" name="user" type="number" min="1" step="1" value="{{ f.get('user','') }}" placeholder="Any"></div>
+ <div class="field{% if ferrs.get('user') %} err{% endif %}"><label for="au">User</label><input id="au" name="user" type="search" maxlength="100" value="{{ f.get('user','') }}" placeholder="Name, email or user no." aria-describedby="au-h"><div class="hint" id="au-h">The number shown next to each name on Accounts works too.</div></div>
  <div class="field"><label for="at">Table</label><select id="at" name="table"><option value="">Any table</option>{% for t in tables %}<option {% if f.get('table') == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div>
  <div class="field"><label for="ar">Record id</label><input id="ar" name="record" maxlength="40" value="{{ f.get('record','') }}" placeholder="Any"></div>
  <div class="field"><label for="as">From</label><input id="as" name="since" type="date" value="{{ f.get('since','') }}"></div>
- <div class="field"><label for="ae">To</label><input id="ae" name="until" type="date" value="{{ f.get('until','') }}"></div></div>
+ <div class="field{% if ferrs.get('until') %} err{% endif %}"><label for="ae">To</label><input id="ae" name="until" type="date" value="{{ f.get('until','') }}" {% if f.get('since') %}min="{{ f.get('since') }}"{% endif %}
+  {% if ferrs.get('until') %}aria-invalid="true" aria-describedby="ae-e"{% endif %}>{% if ferrs.get('until') %}<div class="ferr" id="ae-e" role="alert">{{ ferrs['until'] }}</div>{% endif %}</div></div>
  <div class="actions" style="margin-top:14px"><button class="btn teal" type="submit">Apply filters</button><a class="btn ghost" href="{{ url_for('admin_audit') }}">Clear</a></div></form>
-<div class="card"><header><h2 class="h3">{{ items|length }} entr{{ 'y' if items|length == 1 else 'ies' }}</h2><span class="muted">Newest first, up to 300</span></header>
-{% if items %}<div class="tablewrap"><table><thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Table</th><th scope="col">Record</th><th scope="col">Field</th><th scope="col">Before</th><th scope="col">After</th></tr></thead><tbody>
-{% for a in items %}<tr><td class="nowrap">{{ m.time(a[1]) }}</td><td class="mono">{{ a[2] or '—' }}</td><td><span class="pill {{ {'INSERT':'green','UPDATE':'amber','DELETE':'red','JOB':'grey'}.get(a[3],'grey') }}">{{ a[3] }}</span></td><td class="mono">{{ a[4] }}</td><td class="mono">{{ a[5] }}</td><td>{{ a[6] or '' }}</td>
- <td class="muted" style="max-width:200px;overflow-wrap:anywhere">{{ a[7] if a[7] is not none else '' }}</td><td style="max-width:200px;overflow-wrap:anywhere">{{ a[8] if a[8] is not none else '' }}</td></tr>{% endfor %}</tbody></table></div>
-{{ m.shown_note(shown|default(none), total|default(none), 'entries') }}
+<div class="card"><header><h2 class="h3">{{ total|plural('entry', 'entries') }}</h2><span class="muted" role="status">{% if items %}Showing {{ first }}–{{ last }} of {{ total }}, newest first{% else %}Newest first{% endif %}</span></header>
+{# RS-N02: fits a 1280 laptop. Long values (a whole row for INSERT) show their start and open in place; emails are cut with an
+   ellipsis and kept whole in the title, never broken mid-domain #}
+{% macro val(v, cls='') -%}{% if v is none %}{% elif v|length <= 36 %}<span class="{{ cls }}">{{ v }}</span>{% else %}<details class="av {{ cls }}"><summary title="{{ v[:300] }}"><span class="cut">{{ v[:36] }}</span><span class="sr"> (shortened, show all)</span></summary><code>{{ v }}</code></details>{% endif %}{%- endmacro %}
+{% if items %}<div class="tablewrap" tabindex="0" role="region" aria-label="Audit entries"><table class="audit"><thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Record</th><th scope="col">Field</th><th scope="col">Before</th><th scope="col">After</th></tr></thead><tbody>
+{% for a in items %}<tr><td class="when">{{ m.time(a[1]) }}</td><td class="who">{% if a[2] %}<div class="nm">{{ a[9] or 'Account' }} <span class="muted mono">#{{ a[2] }}</span></div>{% if a[10] %}<div class="muted em" title="{{ a[10] }}">{{ a[10] }}</div>{% endif %}{% else %}<span class="muted">System</span>{% endif %}</td>
+ <td><span class="pill {{ {'INSERT':'green','UPDATE':'amber','DELETE':'red','JOB':'grey'}.get(a[3],'grey') }}">{{ a[3] }}</span></td><td class="rec"><span class="mono">{{ a[4]|e|replace('_', '_<wbr>'|safe) }}</span>{% if a[5] %}<small class="mono muted sub" title="{{ a[5] }}">{{ a[5] }}</small>{% endif %}</td><td class="fld">{{ (a[6] or '')|e|replace('_', '_<wbr>'|safe) }}</td>
+ <td class="v">{{ val(a[7], 'muted') }}</td><td class="v">{{ val(a[8]) }}</td></tr>{% endfor %}</tbody></table></div>
+<nav class="row" aria-label="Audit log pages" style="margin-top:14px;align-items:center;justify-content:space-between">
+ {% if prev_url %}<a class="btn ghost sm" href="{{ prev_url }}" rel="prev">Newer entries</a>{% else %}<span></span>{% endif %}
+ <span class="muted">Page {{ page }} of {{ pages }}</span>
+ {% if next_url %}<a class="btn ghost sm" href="{{ next_url }}" rel="next">Older entries</a>{% else %}<span></span>{% endif %}</nav>
+{% elif page > 1 and total %}{{ m.empty('There are only ' ~ pages ~ ' pages for these filters.') }}<p><a class="btn ghost sm" href="{{ first_url }}">Back to the first page</a></p>
 {% else %}{{ m.empty('No entries match these filters.') }}{% endif %}</div>
 {% endblock %}
