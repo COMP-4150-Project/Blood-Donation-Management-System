@@ -32,7 +32,35 @@ COMP-4150 group project (University of Windsor). Vytal is a database-driven plat
 | `tests/` | pytest suite (unit, integration, concurrency, security, data integrity) |
 | `bench/` | Performance benchmark (`bench.py`), per-index evidence (`index_ablation.py`) and the bulk-data generator |
 | `ops/` | Runnable nightly expiry and backup scripts, with a crontab example |
+| `gui/` | Step 5 web GUI (Flask): donor, hospital staff and admin screens, templates, styles, screenshots. See `gui/README.md` |
 | `Dockerfile`, `docker/`, `deploy-vps.sh`, `enable-https.sh` | Hosted demo: one container with PostgreSQL and the GUI, VPS deploy, HTTPS with Caddy, daily 04:00 (Toronto) reseed. See `DEMO.md` |
+
+## Step 5 contributions
+
+| Team member | Role | Step 5 contribution |
+|---|---|---|
+| Jainam Sheth | Systems Analyst | Integrated the four parts into one working app; ran two full test rounds (browser, security, accessibility, database integrity) and made the fixes from them; added the height and blood-volume eligibility check; hosted demo site |
+| Aakanksha Mandal | Backend Engineer | Flask application and routes (`gui/app.py`, `gui/__init__.py`), `run_gui.sh`, `requirements.txt` |
+| Mohammad Imaad | Data Modeling Specialist | Read queries for every screen (`gui/reads.py`), GUI tests (`tests/test_gui.py`), and the admin, inventory, test result, donor search and notification pages |
+| Shruti Dadhania | UX & Integration Specialist | Page layout and shared components, the remaining templates, styles and scripts (`gui/static/`), screenshots and `gui/README.md` |
+
+---
+
+## Changes since Step 3
+
+The database is the Step 3 design plus the changes below. No table or column from Step 3 was removed or renamed.
+
+| Change | Detail |
+|---|---|
+| Tables: 29 to **30** | New `user_session` (6 columns) holds server-side sign-in sessions: a hashed token and an idle timeout (SE-06, `sql/03_sessions.sql`). Added with Step 4. |
+| Columns: 151 to **161** | The 6 columns of `user_session` plus the 4 new columns below. |
+| `donor.height_cm` | Required, 100 to 250 cm. Used with sex and weight to estimate blood volume. Donors enter it on their profile. |
+| `eligibility_rule.min_blood_volume_ml` | Minimum estimated blood volume to donate: 3,000 ml for both sexes by default, between 1,500 and 6,000, editable by an Admin under Clinical rules. |
+| `notification.call_id` | Links a donation call notification to its call, so a donor can accept or decline it from Notifications. |
+| `deferral_reason.is_active` | A retired reason stays in the history but is no longer offered for new deferrals. |
+| Index `facility_name_ci` | Unique on the lower-cased facility name, so two facilities cannot differ only by letter case. |
+
+**Blood-volume rule (added after the Step 2 and Step 3 documents).** A donor's estimated blood volume comes from the Nadler formula using sex, height and weight (`estimated_blood_volume_ml()`). A donor is eligible only if that volume is at least `min_blood_volume_ml`. A single donation may not take more than 15% of it: `record_donation()` checks this, and a trigger repeats the check so direct SQL cannot bypass it. The donor home page shows the donor's estimate and, if they do not qualify, the exact figures.
 
 ---
 
@@ -59,7 +87,7 @@ On Windows, if `psql` is not found, add `C:\Program Files\PostgreSQL\16\bin` to 
 ### 2. Install Python 3.10+ and the libraries
 
 ```bash
-git clone -b step4 https://github.com/COMP-4150-Project/Blood-Donation-Management-System.git
+git clone https://github.com/COMP-4150-Project/Blood-Donation-Management-System.git
 cd Blood-Donation-Management-System
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -155,7 +183,7 @@ From the project folder, with the virtual environment active and the variables f
 pytest -q
 ```
 
-Expected: **347 passed** (all tests run; nothing is skipped).
+Expected: **634 passed** in the full repository. The Step 5 submission zip leaves out the hosting files, so there three tests are skipped and the result is **631 passed, 3 skipped**.
 
 - The tests create and drop their own `vytal_test*` databases, so your `vytal` database is never touched.
 - Two security tests log in for real as `vytal_app` and `vytal_scheduler`. They connect to `PGHOST`/`PGPORT` and use the role passwords setup gave (`VYTAL_APP_PW` / `VYTAL_SCHEDULER_PW`, or the development defaults), so they pass with password authentication as well as with trust authentication. Export the same `VYTAL_*_PW` values for `pytest` that you gave `setup.sh`.
