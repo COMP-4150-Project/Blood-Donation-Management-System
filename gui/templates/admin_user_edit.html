@@ -1,0 +1,13 @@
+{% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Edit account{% endblock %}{% block crumb %}Accounts · #{{ a.user_id }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ a.first_name }} {{ a.last_name }}</h1><p>{{ a.role }} account #{{ a.user_id }}{% if a.donor_code %} · donor {{ a.donor_code }}{% endif %}{% if a.facility %} · {{ a.facility }}{% endif %}. Every change is recorded in the audit log.</p></div>
+ <a class="btn ghost" href="{{ url_for('admin_users') }}">Back to accounts</a></div>
+<form class="card" method="post" action="{{ url_for('admin_user_edit', user_id=a.user_id) }}" novalidate>{{ m.csrf_field() }}<header><h2 class="h3">Name and contact details</h2>
+ <span class="pill {{ 'green' if a.is_active else 'grey' }}">{{ 'Active' if a.is_active else 'Deactivated' }}</span></header>
+ <div class="form-grid">
+  {{ m.field('first_name','First name', value=a.first_name, attrs='maxlength="' ~ NAME_MAX ~ '" autocomplete="off"') }}{{ m.field('last_name','Last name', value=a.last_name, attrs='maxlength="' ~ NAME_MAX ~ '" autocomplete="off"') }}
+  {{ m.field('email','Email','email', value=a.email or '', required=a.email is not none, hint=none if a.email is not none else 'Leave blank to keep the current address.', attrs='maxlength="254" autocomplete="off"') }}
+  {{ m.field('phone','Phone','tel', value=a.phone or '', required=false, attrs='maxlength="40" autocomplete="off"', ph='519-555-0100') }}</div>
+ <div class="actions" style="margin-top:14px"><button class="btn red" type="submit" data-confirm="The account's name and contact details will be updated. Sign-in uses the new email straight away." data-title="Save changes?" data-go="Save">Save changes</button>
+  <a class="btn ghost" href="{{ url_for('admin_users') }}">Cancel</a></div></form>
+{% endblock %}

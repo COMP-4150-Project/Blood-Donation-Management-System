@@ -95,7 +95,7 @@ def test_history_timestamps_are_in_the_past_and_ordered(sdb):
 def test_sample_data_is_reproducible(seeded_db):
     """MA-03: loading the sample data twice gives identical data (dates are relative to the load time)."""
     other = build(PREFIX + "_seeded_again", with_data=True)
-    sig = ("SELECT md5(string_agg(concat_ws('|', o.donor_code, o.blood_group, CASE WHEN o.next_eligible_date = 'infinity' THEN -1 ELSE o.next_eligible_date - CURRENT_DATE END, d.donation_type_code, "
+    sig = ("SELECT md5(string_agg(concat_ws('|', o.donor_code, o.blood_group, CASE WHEN o.next_eligible_date = 'infinity' THEN -1 ELSE o.next_eligible_date - clinic_today() END, d.donation_type_code, "
            "u.unit_id, u.status, ru.request_id), ',' ORDER BY o.donor_code, d.donation_id, u.unit_id, ru.request_id)) "
            "FROM donor o LEFT JOIN donation d ON d.donor_id = o.user_id LEFT JOIN blood_unit u USING (donation_id) "
            "LEFT JOIN request_unit ru USING (unit_id)")
@@ -176,7 +176,7 @@ def test_scenario_3_from_donation_to_shelf(sdb):
     donor, = sdb.q("SELECT user_id FROM user_account WHERE first_name = 'Marcus'")
     assert sdb.one("SELECT count(*) FROM donation d JOIN staff s ON s.user_id = d.recorded_by WHERE d.donor_id = %s AND s.facility_id = 3",
                    donor) >= 4
-    dn, hb, day = sdb.q("SELECT donation_id, hemoglobin_gl, donated_at::date FROM donation WHERE donor_id = %s "
+    dn, hb, day = sdb.q("SELECT donation_id, hemoglobin_gl, clinic_date(donated_at) FROM donation WHERE donor_id = %s "
                         "ORDER BY donated_at DESC LIMIT 1", donor)[0]
     assert hb == 142
     assert sdb.one("SELECT next_eligible_date - %s FROM donor WHERE user_id = %s", (day, donor[0])) == 56

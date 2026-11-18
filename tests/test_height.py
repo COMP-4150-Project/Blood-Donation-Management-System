@@ -57,10 +57,11 @@ def test_eligibility_flips_when_height_or_weight_drops_the_volume_below_the_rule
     d = db.donor(sex="F", kg=55, cm=160, screened=True)             # about 3.2 L
     status = "SELECT status FROM v_donor_eligibility WHERE user_id=%s"
     assert db.one(status, (d,)) == "Eligible"
-    db.q("UPDATE donor SET height_cm = 140 WHERE user_id=%s", (d,))     # 0.3561 * 2.744 + 1.819 + 0.183 = 2.979 L
-    assert db.one(status, (d,)) == "Not eligible (estimated blood volume under 3.0 L: check height and weight)"
+    db.q("UPDATE donor SET height_cm = 140 WHERE user_id=%s", (d,))     # 0.3561 * 2.744 + 1.819 + 0.183 = 2.980 L
+    assert db.one(status, (d,)) == "Not eligible (estimated blood volume under 3,000 ml: check height and weight)"
     reason, can = db.q("SELECT reason, can_be_called FROM v_donor_eligibility WHERE user_id=%s", (d,))[0]
-    assert "estimated blood volume of 3.0 L" in reason and "at least 3.0 L" in reason and not can
+    # ADM-15 / DON-06: whole ml, so the figure is visibly under the minimum (it used to read '3.0 L, under 3.0 L')
+    assert reason == "Height and weight give an estimated blood volume of 2,980 ml, under the 3,000 ml minimum" and not can
     assert db.one("SELECT eligible_from FROM donor_eligibility(%s)", (d,)) is None
     db.q("UPDATE donor SET height_cm = 160, weight_kg = 50 WHERE user_id=%s", (d,))   # 3.039 - no: 1.459+1.654+0.183 = 3.296 L
     assert db.one(status, (d,)) == "Eligible"
@@ -85,7 +86,7 @@ def test_admin_changing_the_minimum_volume_changes_eligibility(db):
     assert db.one(status, (d,)) == "Eligible"
     db.q("SELECT set_config('vytal.user_id', %s, true)", (str(db.admin),))
     db.q("CALL set_eligibility_rule(%s,'M',17,50,130,5500)", (db.admin,))
-    assert db.one(status, (d,)) == "Not eligible (estimated blood volume under 5.5 L: check height and weight)"
+    assert db.one(status, (d,)) == "Not eligible (estimated blood volume under 5,500 ml: check height and weight)"
     db.q("CALL set_eligibility_rule(%s,'M',17,50,130,4000)", (db.admin,))
     assert db.one(status, (d,)) == "Eligible"
     assert db.q("SELECT old_value, new_value FROM audit_log WHERE table_name='eligibility_rule' AND field_name='min_blood_volume_ml' "

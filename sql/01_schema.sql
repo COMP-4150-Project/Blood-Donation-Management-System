@@ -2,6 +2,16 @@ DROP SCHEMA IF EXISTS vytal CASCADE;
 CREATE SCHEMA vytal;
 SET search_path = vytal;
 
+-- ---------------------------------------------------------------- DI-06 stored in UTC, judged on the clinic's calendar
+-- Sessions run in UTC; every date rule (next eligible date, deferral start and end, age, the screening day, expiry dates
+-- shown as dates, required-by checks) uses the clinic's local day instead of the UTC one, so an evening in Ontario is
+-- still today there.
+CREATE FUNCTION clinic_tz() RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT 'America/Toronto'::text $$;
+CREATE FUNCTION clinic_date(p_at timestamptz) RETURNS date LANGUAGE sql STABLE AS $$
+    SELECT (p_at AT TIME ZONE vytal.clinic_tz())::date
+$$;
+CREATE FUNCTION clinic_today() RETURNS date LANGUAGE sql STABLE AS $$ SELECT vytal.clinic_date(now()) $$;
+
 CREATE TABLE user_account (
     user_id SERIAL NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
@@ -18,8 +28,10 @@ CREATE TABLE user_account (
     PRIMARY KEY (user_id),
     CHECK (role IN ('Donor','Staff','Admin')),
     CHECK (failed_logins >= 0),
-    CHECK (btrim(first_name) <> '' AND btrim(last_name) <> '')
+    CHECK (btrim(first_name) <> '' AND btrim(last_name) <> ''),
+    CHECK (phone IS NULL OR phone ~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$')
 );
+CREATE UNIQUE INDEX user_account_email_ci ON user_account (lower(email));      -- one account per address, whatever the case
 CREATE TABLE donor (
     user_id INT NOT NULL,
     donor_code VARCHAR(10) NOT NULL UNIQUE,
@@ -62,6 +74,7 @@ CREATE TABLE facility (
     CHECK (btrim(name) <> '' AND btrim(address) <> ''),
     CHECK (phone IS NULL OR phone ~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$')
 );
+CREATE UNIQUE INDEX facility_name_ci ON facility (lower(name));               -- 'Riverside' and 'riverside' are one facility
 CREATE TABLE blood_group (
     blood_group VARCHAR(3) NOT NULL,
     abo VARCHAR(2) NOT NULL,
@@ -115,6 +128,7 @@ CREATE TABLE deferral_reason (
     description VARCHAR(200) NOT NULL,
     is_permanent BOOLEAN NOT NULL,
     default_days INT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,          -- post-spec addition (like height): a retired reason is kept for history
     PRIMARY KEY (reason_code),
     CHECK ((is_permanent AND default_days IS NULL) OR (NOT is_permanent AND default_days > 0 AND default_days <= 3650))
 );
@@ -149,7 +163,7 @@ CREATE TABLE deferral (
     deferral_id SERIAL NOT NULL,
     donor_id INT NOT NULL,
     reason_code VARCHAR(10) NOT NULL,
-    start_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    start_date DATE NOT NULL DEFAULT clinic_today(),
     end_date DATE,
     screening_id INT,
     recorded_by INT,
@@ -283,6 +297,7 @@ CREATE TABLE notification (
     message VARCHAR(500) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     read_at TIMESTAMPTZ,
+    call_id INT,                                       -- the donation call a notification announces (UC-20), else NULL
     PRIMARY KEY (notification_id),
     CHECK (read_at IS NULL OR read_at >= created_at)
 );
@@ -332,3 +347,4 @@ ALTER TABLE call_recipient ADD CONSTRAINT fk_call_recipient_0 FOREIGN KEY (call_
 ALTER TABLE call_recipient ADD CONSTRAINT fk_call_recipient_1 FOREIGN KEY (donor_id) REFERENCES donor (user_id) ON DELETE RESTRICT;
 ALTER TABLE audit_log ADD CONSTRAINT fk_audit_log_0 FOREIGN KEY (user_id) REFERENCES user_account (user_id) ON DELETE RESTRICT;
 ALTER TABLE notification ADD CONSTRAINT fk_notification_0 FOREIGN KEY (user_id) REFERENCES user_account (user_id) ON DELETE RESTRICT;
+ALTER TABLE notification ADD CONSTRAINT fk_notification_1 FOREIGN KEY (call_id) REFERENCES donation_call (call_id) ON DELETE RESTRICT;

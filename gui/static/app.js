@@ -7,22 +7,34 @@
   $$('.page > *').forEach((el, i) => el.style.setProperty('--i', Math.min(i, 8)));
   $$('tbody tr').forEach((tr, i) => { tr.classList.add('reveal-row'); tr.style.setProperty('--r', Math.min(i, 14)); });
 
-  // animated numbers
-  const count = el => {
-    const end = parseFloat(el.dataset.count), dec = (el.dataset.count.split('.')[1] || '').length;
-    if (reduce || isNaN(end)) { el.textContent = end.toFixed(dec); return; }
+  // animated numbers (RSP-01): the server renders the real value; motion only replays it from 0 when the number is on the first screen
+  const fmt = (v, dec, grouped) => grouped ? v.toLocaleString('en-CA', { minimumFractionDigits: dec, maximumFractionDigits: dec }) : v.toFixed(dec);
+  const count = (el, still) => {
+    const raw = el.dataset.count, end = parseFloat(raw), dec = (raw.split('.')[1] || '').length, shown = el.textContent.trim();
+    if (isNaN(end)) return;
+    const final = shown && parseFloat(shown.replace(/,/g, '')) === end ? shown : fmt(end, dec, false), grouped = shown.includes(',');
+    if (reduce || end === 0 || still) { el.textContent = final; return; }
     const t0 = performance.now(), dur = 900;
-    const tick = t => { const p = Math.min((t - t0) / dur, 1), e = 1 - Math.pow(1 - p, 3); el.textContent = (end * e).toFixed(dec); if (p < 1) requestAnimationFrame(tick); };
-    requestAnimationFrame(tick);
+    const tick = t => { const p = Math.min((t - t0) / dur, 1), e = 1 - Math.pow(1 - p, 3); el.textContent = p < 1 ? fmt(end * e, dec, grouped) : final; if (p < 1) requestAnimationFrame(tick); };
+    el.textContent = fmt(0, dec, grouped); requestAnimationFrame(tick);
   };
-  // bars, rings and cells grow once they are on screen
-  const io = new IntersectionObserver(es => es.forEach(e => {
-    if (!e.isIntersecting) return; io.unobserve(e.target); const el = e.target;
-    if (el.dataset.count) count(el);
+  const ringOff = el => 326.7 * (1 - Math.min(Math.max(parseFloat(el.dataset.p) || 0, 0), 100) / 100);
+  const settle = el => {   // final state, no motion
     if (el.dataset.w) el.style.setProperty('--w', el.dataset.w + '%');
-    if (el.classList.contains('ring')) el.querySelector('.fg').style.strokeDashoffset = 326.7 * (1 - el.dataset.p / 100);
-  }), { threshold: .2 });
-  $$('[data-count],[data-w],.ring').forEach(el => { if (el.dataset.w) el.style.setProperty('--w', '0%'); io.observe(el); });
+    if (el.classList.contains('ring')) el.querySelector('.fg').style.strokeDashoffset = ringOff(el);
+  };
+  const grow = $$('[data-count],[data-w],.ring');
+  if (reduce || !window.IntersectionObserver) grow.forEach(el => { settle(el); if (el.dataset.count) count(el); });
+  else {
+    // what is on the first screen grows in; the rest (and hidden tab panels) shows its final state at once,
+    // so long pages, full-page captures and print never show empty bars
+    const io = new IntersectionObserver(es => { es.forEach(e => {
+      const el = e.target; io.unobserve(el); const seen = e.isIntersecting && e.intersectionRatio > 0;
+      if (el.dataset.count) count(el, !seen);
+      if (seen) requestAnimationFrame(() => settle(el)); else settle(el);
+    }); });
+    grow.forEach(el => { if (el.dataset.w) el.style.setProperty('--w', '0%'); io.observe(el); });
+  }
 
   // times are stored in UTC; show them in the viewer's time zone
   $$('time[datetime]').forEach(t => {
@@ -70,15 +82,26 @@
   // confirmation dialog for destructive actions (US-07)
   const dlg = $('#confirm-dialog');
   if (dlg) {
-    let pending = null;
+    let pending = null, opener = null;
     document.addEventListener('submit', e => {
       const f = e.target, btn = e.submitter, msg = (btn && btn.dataset.confirm) || f.dataset.confirm;
       if (!msg || f.dataset.ok) return;
       e.preventDefault(); pending = { f, btn };
       $('#confirm-title').textContent = (btn && btn.dataset.title) || f.dataset.title || 'Please confirm';
       $('#confirm-text').textContent = msg; $('#confirm-go').textContent = (btn && btn.dataset.go) || f.dataset.go || 'Confirm';
-      dlg.showModal(); $('#confirm-go').focus();
+      opener = btn || document.activeElement; dlg.showModal(); $('#confirm-go').focus();
     }, true);
+    // keep Tab and Shift+Tab inside the open dialog, and hand focus back to whatever opened it
+    dlg.addEventListener('keydown', e => {
+      if (e.key !== 'Tab') return;
+      const items = [...dlg.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(x => !x.disabled && x.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !dlg.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !dlg.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    });
+    dlg.addEventListener('cancel', () => { pending = null; });
+    dlg.addEventListener('close', () => { const o = opener; opener = null; if (o && o.isConnected && typeof o.focus === 'function') o.focus(); });
     $('#confirm-go').onclick = () => { dlg.close(); if (!pending) return; const { f, btn } = pending; f.dataset.ok = '1'; f.requestSubmit(btn); };
     $('#confirm-no').onclick = () => { dlg.close(); pending = null; };
     dlg.addEventListener('click', e => { if (e.target === dlg) { dlg.close(); pending = null; } });
@@ -93,15 +116,24 @@
   $$('[data-filter]').forEach(inp => {
     const rows = $$(inp.dataset.filter + ' tbody tr');
     const none = $(inp.dataset.empty || '#none-' + inp.id);
-    inp.addEventListener('input', () => { const q = inp.value.toLowerCase(); let n = 0; rows.forEach(r => { r.hidden = !!q && !r.textContent.toLowerCase().includes(q); if (!r.hidden) n++; }); if (none) none.hidden = n > 0; });
+    // STF-03: blood groups print a typographic minus (U+2212); a typed '-' and a pasted minus match either way
+    const norm = t => t.toLowerCase().replace(/[\u2212\u2012\u2013\u2014\uFE63\uFF0D]/g, '-').replace(/\s+/g, ' ');
+    const text = new Map(rows.map(r => [r, norm(r.textContent)]));
+    inp.addEventListener('input', () => { const q = norm(inp.value).trim(); let n = 0; rows.forEach(r => { r.hidden = !!q && !text.get(r).includes(q); if (!r.hidden) n++; }); if (none) none.hidden = n > 0; });
   });
   // select all
   $$('[data-all]').forEach(master => master.addEventListener('change', () => $$(master.dataset.all).forEach(c => c.checked = master.checked)));
 
   // theme toggle
-  const tb = $('#theme');
-  if (tb) tb.onclick = () => { const dark = (document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark';
-    const n = dark ? 'light' : 'dark'; document.documentElement.dataset.theme = n; try { localStorage.setItem('vytal-theme', n); } catch (_) {} };
+  // theme toggle (RSP-09): a toggle button, pressed = dark theme; the tooltip says what a press does
+  const tb = $('#theme'), osDark = matchMedia('(prefers-color-scheme: dark)');
+  const isDark = () => (document.documentElement.dataset.theme || (osDark.matches ? 'dark' : 'light')) === 'dark';
+  const showTheme = () => { if (!tb) return; const d = isDark(); tb.setAttribute('aria-pressed', String(d)); tb.title = d ? 'Switch to light theme' : 'Switch to dark theme'; };
+  if (tb) {
+    showTheme();
+    tb.onclick = () => { const n = isDark() ? 'light' : 'dark'; document.documentElement.dataset.theme = n; try { localStorage.setItem('vytal-theme', n); } catch (_) {} showTheme(); };
+    if (osDark.addEventListener) osDark.addEventListener('change', showTheme);
+  }
 
   // request form: sensible default deadline per urgency (BR-10), sent with the browser's own offset
   const rf = $('#request-form');
@@ -131,7 +163,24 @@
   }));
 
   // demo sign-in shortcuts on the login page
-  $$('[data-demo]').forEach(b => b.onclick = () => { $('#email').value = b.dataset.demo; $('#password').value = 'Vytal-demo-2026'; $('#password').focus(); });
+  const fillDemo = b => { const em = $('#email'), pw = $('#password'); if (!em || !pw) return; em.value = b.dataset.demo; pw.value = 'Vytal-demo-2026'; pw.focus(); };
+  $$('[data-demo]').forEach(b => { b.onclick = () => fillDemo(b);
+    if (b.tagName !== 'BUTTON') b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fillDemo(b); } }); });
+
+  // scrolling tables (RSP-04): mark when columns are hidden past the right edge, so the pinned action column casts a shadow
+  $$('.tablewrap').forEach(w => {
+    // RSP-03 safety net: a region that scrolls must take keyboard focus (templates normally set tabindex/role/aria-label)
+    if (!w.hasAttribute('tabindex') && w.scrollWidth > w.clientWidth + 1) {
+      w.tabIndex = 0;
+      if (!w.getAttribute('role')) w.setAttribute('role', 'region');
+      if (!w.hasAttribute('aria-label') && !w.hasAttribute('aria-labelledby')) {
+        const card = w.closest('.card'), h = card && card.querySelector('h2,h3'), cap = w.querySelector('caption');
+        w.setAttribute('aria-label', ((cap || h || {}).textContent || 'Table').trim() + ' (scrolls sideways)');
+      }
+    }
+    const mark =() => w.classList.toggle('more-r', w.scrollLeft + w.clientWidth < w.scrollWidth - 1);
+    mark(); w.addEventListener('scroll', mark, { passive: true }); addEventListener('resize', mark);
+  });
 })();
 
 // tabs (component switchers): aria-selected, roving tabindex and arrow keys

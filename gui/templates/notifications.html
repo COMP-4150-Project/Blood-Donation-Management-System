@@ -1,9 +1,17 @@
 {% extends 'base.html' %}{% import 'macros.html' as m with context %}{% block title %}Notifications{% endblock %}{% block crumb %}Inbox{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Notifications</h1><p>Calls from hospitals and system messages sent to you.</p></div>
-{% if items|selectattr('3','none')|list %}<form method="post" action="{{ url_for('notifications_read') }}" class="actions">{{ m.csrf_field() }}
- {% for n in items if n[3] is none %}<input type="hidden" name="id" value="{{ n[0] }}">{% endfor %}<button class="btn ghost" type="submit">Mark all read</button></form>{% endif %}</div>
-<div class="card">{% if items %}<div class="timeline">{% for n in items %}<div class="tl {{ 'red' if n[3] is none }} reveal" style="--i:{{ [loop.index0,10]|min }}"><i></i><div><p {% if n[3] is none %}style="font-weight:600"{% endif %}>{{ n[1] }}</p>
- <div class="t">{{ m.time(n[2], rel=true) }}{% if n[3] is none %} · <span class="pill red">New</span>{% endif %}</div></div></div>{% endfor %}</div>
+{% set donor = user.role == 'Donor' %}
+<div class="page-head"><div><h1>Notifications</h1><p>{% if donor %}Calls from hospitals and system messages sent to you. Answer a call here or on your dashboard.{% elif user.role == 'Staff' %}Donors who accept a call for one of your facility's requests, and system messages sent to you.{% else %}System messages sent to you.{% endif %}</p></div>
+{% if items|selectattr('read_at','none')|list %}<form method="post" action="{{ url_for('notifications_read') }}" class="actions">{{ m.csrf_field() }}
+ {% for n in items if n.read_at is none %}<input type="hidden" name="id" value="{{ n.notification_id }}">{% endfor %}<button class="btn ghost" type="submit">Mark all read</button></form>{% endif %}</div>
+<div class="card">{% if items %}<div class="timeline">{% for n in items %}{% set new = n.read_at is none %}<div class="tl {{ 'red' if new }} reveal" style="--i:{{ [loop.index0,10]|min }}"><i></i><div><p {% if new %}style="font-weight:600"{% endif %}>{{ n.message }}</p>
+ <div class="t">{{ m.time(n.created_at, rel=true) }}{% if new %} · <span class="pill red">New</span>{% endif %}</div>
+ {% if donor and n.call_id and n.for_donor %}<div class="row" style="margin-top:10px;align-items:center;gap:8px">
+  {% if n.answerable %}<form method="post" action="{{ url_for('donor_call', call_id=n.call_id) }}" class="row">{{ m.csrf_field() }}<input type="hidden" name="from" value="notifications">
+   <button class="btn teal sm" name="answer" value="accept">I can help</button><button class="btn ghost sm" name="answer" value="decline">Not now</button></form>
+  {% elif n.response == 'Accepted' %}{{ m.status('Accepted') }}<span class="muted">You accepted this call. Your dashboard shows where to book.</span>
+  {% elif n.response == 'Declined' %}{{ m.status('Declined') }}<span class="muted">You declined this call.</span>
+  {% else %}{{ m.status('Closed') }}<span class="muted">This call has closed, thank you. No donation is needed for it now.</span>{% endif %}</div>{% endif %}
+ </div></div>{% endfor %}</div>
 {% else %}{{ m.empty('You are all caught up.') }}{% endif %}</div>
 {% endblock %}

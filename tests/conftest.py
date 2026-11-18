@@ -102,7 +102,7 @@ class DB:
     def donor(self, group="O+", sex="M", age=30, kg=70, verified=True, screened=False, cm=None):
         self.seq += 1
         cm = cm or (178 if sex == "M" else 165)
-        uid = self.one("CALL register_donor(%s,'x','A','B',NULL,(CURRENT_DATE - make_interval(years => %s))::date,%s,%s,%s,'1 Main St',%s)",
+        uid = self.one("CALL register_donor(%s,'x','A','B',NULL,(clinic_today() - make_interval(years => %s))::date,%s,%s,%s,'1 Main St',%s)",
                        (f"d{self.seq}@v.ca", age, sex, kg, cm, group))
         if verified:                                    # staff verify as themselves (FR-09), then the caller's session is restored
             prev = self.one("SELECT current_setting('vytal.user_id', true)")

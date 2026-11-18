@@ -4,10 +4,10 @@
  <div class="actions"><a class="btn red" href="{{ url_for('staff_request_new') }}">New blood request</a><a class="btn ghost" href="{{ url_for('staff_search') }}">Find donors</a></div></div>
 
 <div class="grid g3" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
- <div class="card stat teal lift"><span class="l">Units on the shelf</span><span class="n" data-count="{{ o.stats.available }}">0</span><span class="l">available now</span></div>
- <div class="card stat lift {{ 'red' if o.stats.expiring }}"><span class="l">Expiring in 48 hours</span><span class="n" data-count="{{ o.stats.expiring }}">0</span><span class="l">use these first</span></div>
- <div class="card stat lift {{ 'red' if o.stats.open_requests }}"><span class="l">Open requests</span><span class="n" data-count="{{ o.stats.open_requests }}">0</span><span class="l">at this facility</span></div>
- <div class="card stat teal lift"><span class="l">Donors ready</span><span class="n" data-count="{{ o.stats.donors_ready }}">0</span><span class="l">eligible and verified</span></div>
+ <div class="card stat teal lift"><span class="l">Units on the shelf</span><span class="n" data-count="{{ o.stats.available }}">{{ o.stats.available }}</span><span class="l">available now</span></div>
+ <div class="card stat lift {{ 'red' if o.stats.expiring }}"><span class="l">Expiring in 48 hours</span><span class="n" data-count="{{ o.stats.expiring }}">{{ o.stats.expiring }}</span><span class="l">use these first</span></div>
+ <div class="card stat lift {{ 'red' if o.stats.open_requests }}"><span class="l">Open requests</span><span class="n" data-count="{{ o.stats.open_requests }}">{{ o.stats.open_requests }}</span><span class="l">at this facility</span></div>
+ <div class="card stat teal lift"><span class="l">Donors ready</span><span class="n" data-count="{{ o.stats.donors_ready }}">{{ o.stats.donors_ready }}</span><span class="l">eligible and verified</span></div>
 </div>
 
 {% if o.alerts %}<div class="card" style="border-color:var(--red)"><header><h2 class="h3">Low stock alerts</h2><span class="pill red pulse">{{ o.alerts|length }} open</span></header>
@@ -18,12 +18,12 @@
  <div class="card"><header><h2 class="h3">Stock by blood group</h2>
   <div class="seg" role="tablist" aria-label="Component">{% for code, name in COMPONENTS %}<button type="button" role="tab" id="tab-{{ code }}" aria-controls="panel-{{ code }}" data-tab="{{ code }}" aria-selected="{{ 'true' if loop.first else 'false' }}" tabindex="{{ 0 if loop.first else -1 }}">{{ name }}</button>{% endfor %}</div></header>
   {% for code, name in COMPONENTS %}
-  <div data-panel="{{ code }}" id="panel-{{ code }}" role="tabpanel" aria-labelledby="tab-{{ code }}" {% if not loop.first %}hidden{% endif %} class="tablewrap"><table class="matrix"><caption class="sr">{{ name }} stock by blood group</caption>
+  <div data-panel="{{ code }}" id="panel-{{ code }}" role="tabpanel" aria-labelledby="tab-{{ code }}" {% if not loop.first %}hidden{% endif %} class="tablewrap" tabindex="0"><table class="matrix"><caption class="sr">{{ name }} stock by blood group</caption>
    <thead><tr><td></td>{% for g in GROUPS %}<th scope="col">{{ g|replace('-','−') }}</th>{% endfor %}</tr></thead>
    <tbody><tr><th scope="row">Available</th>{% for g in GROUPS %}{% set c = o.matrix[code][g] %}{% set st = 'low' if c.min is not none and c.available < c.min else ('warn' if c.expiring else ('ok' if c.min is not none else '')) %}
     <td class="cell {{ st }}" title="{{ g }}: {{ c.available }} available, {{ c.reserved }} reserved, {{ c.expiring }} expiring soon, minimum {{ c.min if c.min is not none else 'not set' }}">
      <b>{{ c.available }}</b><small>{% if c.min is not none %}min {{ c.min }}{% else %}no min{% endif %}</small>{% if st %}<span class="sr">, {{ {'low':'below minimum','warn':'some expire within 48 hours','ok':'at or above minimum'}[st] }}</span>{% endif %}
-     <i data-w="{{ [100, (c.available * 100 // (c.min * 2)) if c.min else (c.available * 10)]|min }}"></i></td>{% endfor %}</tr>
+     <i data-w="{{ [100, (c.available * 100 // (c.min * 2)) if c.min else (c.available * 10)]|min }}" style="--w:{{ [100, (c.available * 100 // (c.min * 2)) if c.min else (c.available * 10)]|min }}%"></i></td>{% endfor %}</tr>
    <tr><th scope="row">Reserved</th>{% for g in GROUPS %}<td class="n mono">{{ o.matrix[code][g].reserved }}</td>{% endfor %}</tr></tbody>
   </table></div>{% endfor %}
   <div class="legend" style="margin-top:14px"><span style="--c:var(--red)">Below minimum</span><span style="--c:var(--amber)">Some expire within 48 h</span><span style="--c:var(--green)">At or above minimum</span><span style="--c:var(--teal)">No minimum set</span></div></div>
@@ -33,8 +33,9 @@
   <a href="{{ url_for('staff_request', request_id=r.request_id) }}" class="card lift" style="box-shadow:none;background:var(--surface-2);padding:14px;text-decoration:none;color:inherit;display:grid;gap:8px">
    <div class="row" style="justify-content:space-between;align-items:center">{{ m.urgency(r.urgency) }}{{ m.status(r.status) }}</div>
    <div class="row" style="align-items:center;gap:10px">{{ m.bt(r.recipient_group) }}<b>{{ r.units_requested }} × {{ r.component_code|comp }}</b><span class="muted mono">{{ r.patient_ref }}</span></div>
-   <div class="row" style="justify-content:space-between;font-size:.9rem"><span class="muted">Needed {{ m.time(r.required_by, rel=true) }}</span>
-    <span class="{{ 'ferr' if r.shortfall and r.status == 'Open' }}" style="{{ '' if r.shortfall and r.status == 'Open' else 'color:var(--muted)' }}">{{ r.units_reserved }}/{{ r.units_requested }} reserved</span></div></a>{% endfor %}</div>
+   <div class="row" style="justify-content:space-between;font-size:.9rem">{% if r.status == 'Open' %}<span class="muted">Needed {{ m.time(r.required_by, rel=true) }}</span>
+    <span class="{{ 'ferr' if r.shortfall }}" style="{{ '' if r.shortfall else 'color:var(--muted)' }}">{{ r.units_reserved }} of {{ r.units_requested }} reserved</span>
+    {% else %}<span class="muted">Closed</span><span class="muted">{% if r.status == 'Cancelled' %}Cancelled{% else %}Issued {{ r.units_issued }} of {{ r.units_requested }}{% endif %}</span>{% endif %}</div></a>{% endfor %}</div>
  {% else %}{{ m.empty('No requests yet. New ones appear here, most urgent first.') }}{% endif %}</div>
 </div>
 {% endblock %}

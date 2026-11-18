@@ -11,23 +11,35 @@ SET search_path = vytal;
 -- cannot write any table itself, so procedures are the only way it changes data (SE-04).
 
 -- ---------------------------------------------------------------- FR-20 / UC-14 nightly expiry job
+-- Also scheduled hourly (ops/crontab.example): stock counts, allocation and the screens already leave out a unit past its
+-- expiry time (C10), and the hourly run turns those units Expired so the low-stock alerts follow within the hour (FR-19)
+-- instead of waiting for the night. Requests that lose an expired reservation are topped up from other stock (C15).
 -- SE-02: runs for an active Admin session, or from the scheduler's own database login (vytal_scheduler, 06_security.sql),
 -- which is how ops/nightly_expiry.sh calls it. The login comes from caller_role(), which a SECURITY DEFINER routine does
 -- not change and the application role cannot fake. Anyone else, and a session with no acting user, is refused.
 CREATE PROCEDURE run_nightly_expiry(INOUT expired int DEFAULT NULL) LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = vytal, pg_temp AS $$
-DECLARE actor int;
+DECLARE actor int; short int[]; r int;
 BEGIN
     IF caller_role() = 'vytal_scheduler' THEN actor := NULL;          -- the job itself: no person to record
     ELSE actor := require_actor(ARRAY['Admin']);
     END IF;
+    -- every shelf lock this run needs, sorted, before any row lock (lock_shelf in 02_logic.sql): a quarantine or an issue
+    -- that holds unit rows of one of these shelves takes its shelf lock first too, so one waits for the other (NEW-03)
+    PERFORM lock_shelf(k.facility_id, k.component_code) FROM (
+        SELECT DISTINCT facility_id, component_code FROM blood_unit
+        WHERE status IN ('Collected','Available','Reserved') AND expires_at <= now() ORDER BY 1, 2) k;
     -- expired reservations are released first (Reserved -> Available), so every unit expires along Table 1
-    UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
-      AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now());
+    WITH released AS (
+        UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
+          AND unit_id IN (SELECT unit_id FROM blood_unit WHERE status = 'Reserved' AND expires_at <= now())
+        RETURNING request_id)
+    SELECT array_agg(DISTINCT request_id ORDER BY request_id) INTO short FROM released;
     UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND expires_at <= now();
     UPDATE blood_unit SET status = 'Expired', status_reason = 'Wastage: past expiry'
     WHERE status IN ('Collected','Available') AND expires_at <= now();      -- UC-14
     GET DIAGNOSTICS expired = ROW_COUNT;
+    FOREACH r IN ARRAY coalesce(short, '{}') LOOP PERFORM top_up_request(r); END LOOP;
     INSERT INTO audit_log (user_id, action, table_name, record_id, new_value)
     VALUES (actor, 'JOB', 'blood_unit', 'run_nightly_expiry', expired::text);    -- the acting Admin, or NULL for the scheduler
     RAISE NOTICE 'expired % unit(s)', expired;
@@ -37,13 +49,16 @@ END $$;
 CREATE FUNCTION require_active_facility(p_user int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM staff s JOIN facility f USING (facility_id) WHERE s.user_id = p_user AND NOT f.is_active) THEN
-        RAISE EXCEPTION 'your facility is deactivated: ask an administrator'; END IF;
+        RAISE EXCEPTION 'Your facility is deactivated: ask an administrator'; END IF;
 END $$;
 
 -- required text: trimmed, and never blank
-CREATE FUNCTION require_text(p_value text, p_what text) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$
+-- C5: the message names the form field first, e.g. 'first_name: First name is required'
+CREATE FUNCTION require_text(p_value text, p_what text, p_field text DEFAULT NULL) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$
 BEGIN
-    IF btrim(coalesce(p_value, '')) = '' THEN RAISE EXCEPTION '% is required', p_what; END IF;
+    IF btrim(coalesce(p_value, '')) = '' THEN
+        RAISE EXCEPTION '%', coalesce(p_field, replace(p_what, ' ', '_')) || ': ' || upper(left(p_what, 1)) || substr(p_what, 2)
+                             || ' is required'; END IF;
     RETURN btrim(p_value);
 END $$;
 
@@ -83,11 +98,14 @@ BEGIN
 END $$;
 
 -- SE-02 a staff member works only on their own facility's records; Admins and superuser maintenance sessions pass
+-- C6: a record that does not exist (NULL facility) is reported as not found, never as another facility's
 CREATE FUNCTION require_own_facility(p_actor int, p_facility int, p_what text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE fac int := (SELECT facility_id FROM staff WHERE user_id = p_actor);
 BEGIN
+    IF p_facility IS NULL THEN RAISE EXCEPTION '%', upper(left(p_what, 1)) || substr(p_what, 2) || ' was not found'; END IF;
     IF caller_is_superuser() OR fac IS NULL THEN RETURN; END IF;
-    IF p_facility IS DISTINCT FROM fac THEN RAISE EXCEPTION '% belongs to another facility', p_what; END IF;
+    IF p_facility IS DISTINCT FROM fac THEN
+        RAISE EXCEPTION '%', upper(left(p_what, 1)) || substr(p_what, 2) || ' belongs to another facility'; END IF;
 END $$;
 
 -- ---------------------------------------------------------------- FR-01 donor self-registration (supertype + subtype in one transaction)
@@ -98,8 +116,15 @@ CREATE PROCEDURE register_donor(p_email text, p_password_hash text, p_first text
 LANGUAGE plpgsql AS $$
 DECLARE min_age int := (SELECT min_age_years FROM eligibility_rule WHERE sex = p_sex);
 BEGIN
-    IF age(CURRENT_DATE, p_dob) < make_interval(years => min_age) THEN          -- UC-01 2b / BR-01
-        RAISE EXCEPTION 'donor must be at least % years old to register', min_age; END IF;
+    IF age(clinic_today(), p_dob) < make_interval(years => min_age) THEN          -- UC-01 2b / BR-01
+        RAISE EXCEPTION 'date_of_birth: Donors must be at least % years old to register', min_age; END IF;
+    IF p_dob < DATE '1900-01-01' OR age(clinic_today(), p_dob) > interval '120 years' THEN
+        RAISE EXCEPTION 'date_of_birth: Enter a real date of birth'; END IF;
+    p_phone := nullif(btrim(p_phone), '');
+    IF p_phone IS NOT NULL AND p_phone !~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$' THEN
+        RAISE EXCEPTION 'phone: Enter a phone number like 519-555-0100'; END IF;
+    IF EXISTS (SELECT 1 FROM user_account WHERE lower(email) = lower(btrim(p_email))) THEN
+        RAISE EXCEPTION 'email: That email is already registered'; END IF;
     p_first := require_text(p_first, 'first name'); p_last := require_text(p_last, 'last name');
     INSERT INTO user_account (email, password_hash, first_name, last_name, phone, role)
     VALUES (lower(p_email), p_password_hash, p_first, p_last, p_phone, 'Donor') RETURNING user_id INTO new_user_id;
@@ -117,15 +142,20 @@ BEGIN
     p_first := require_text(p_first, 'first name'); p_last := require_text(p_last, 'last name');
     p_job_title := nullif(btrim(p_job_title), '');
     IF NOT EXISTS (SELECT 1 FROM facility WHERE facility_id = p_facility AND is_active) THEN
-        RAISE EXCEPTION 'facility % does not exist or is inactive', p_facility; END IF;
+        RAISE EXCEPTION 'facility_id: Choose an active facility'; END IF;
+    IF EXISTS (SELECT 1 FROM user_account WHERE lower(email) = lower(btrim(p_email))) THEN
+        RAISE EXCEPTION 'email: That email is already used by another account'; END IF;
     INSERT INTO user_account (email, password_hash, first_name, last_name, role, created_by)
     VALUES (lower(p_email), p_password_hash, p_first, p_last, 'Staff', p_admin) RETURNING user_id INTO new_user_id;
     INSERT INTO staff (user_id, facility_id, job_title) VALUES (new_user_id, p_facility, p_job_title);
 END $$;
 
 -- ---------------------------------------------------------------- SE-05 lock for 15 minutes after 5 failed logins in a row
--- The password hash is checked by the application; this records the outcome atomically.
-CREATE PROCEDURE login_attempt(p_user int, p_password_ok boolean, INOUT outcome text DEFAULT NULL) LANGUAGE plpgsql AS $$
+-- The password hash is checked by the application; this records the outcome atomically. With p_count false (shared demo
+-- accounts, which anyone may try) a wrong password is not counted and the account is never locked, so no visitor can lock
+-- the others out.
+CREATE PROCEDURE login_attempt(p_user int, p_password_ok boolean, p_count boolean DEFAULT TRUE, INOUT outcome text DEFAULT NULL)
+LANGUAGE plpgsql AS $$
 DECLARE a user_account%ROWTYPE;
 BEGIN
     SELECT * INTO a FROM user_account WHERE user_id = p_user FOR UPDATE;
@@ -133,11 +163,12 @@ BEGIN
     IF NOT a.is_active THEN outcome := CASE WHEN p_password_ok THEN 'inactive' ELSE 'failed' END; RETURN; END IF;
     IF EXISTS (SELECT 1 FROM staff s JOIN facility f USING (facility_id) WHERE s.user_id = p_user AND NOT f.is_active) THEN
         outcome := CASE WHEN p_password_ok THEN 'facility_inactive' ELSE 'failed' END; RETURN; END IF;
-    IF a.locked_until > now() THEN outcome := 'locked'; RETURN; END IF;
+    IF a.locked_until > now() AND p_count THEN outcome := 'locked'; RETURN; END IF;
     IF p_password_ok THEN
         UPDATE user_account SET failed_logins = 0, locked_until = NULL WHERE user_id = p_user;
         outcome := 'ok'; RETURN;
     END IF;
+    IF NOT p_count THEN outcome := 'failed'; RETURN; END IF;
     IF a.failed_logins + 1 >= 5 THEN
         UPDATE user_account SET failed_logins = 0, locked_until = now() + interval '15 minutes' WHERE user_id = p_user;
         outcome := 'locked'; RETURN;
@@ -156,17 +187,22 @@ BEGIN
     IF actor IS DISTINCT FROM p_donor AND NOT caller_is_superuser() AND NOT EXISTS (SELECT 1 FROM staff WHERE user_id = actor) THEN
         RAISE EXCEPTION 'screening is entered by the donor or by staff';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM donor WHERE user_id = p_donor) THEN RAISE EXCEPTION 'donor: The donor was not found'; END IF;
     IF (SELECT next_eligible_date FROM donor WHERE user_id = p_donor) = 'infinity' THEN     -- UC-04 precondition
-        RAISE EXCEPTION 'donor is permanently deferred'; END IF;
+        RAISE EXCEPTION 'The donor has a permanent deferral, so no screening is needed'; END IF;
     SELECT count(*) INTO missing FROM screening_question q WHERE q.is_active AND NOT p_answers ? q.question_id::text;
     IF missing > 0 THEN RAISE EXCEPTION '% screening question(s) unanswered', missing; END IF;
     INSERT INTO screening (donor_id) VALUES (p_donor) RETURNING screening_id INTO sid;
     INSERT INTO screening_answer (screening_id, question_id, answer)
     SELECT sid, key::int, value::boolean FROM jsonb_each_text(p_answers);
+    -- a repeated screening (a resubmitted form) does not stack a second copy of a deferral that is already running to the
+    -- same or a later date
     INSERT INTO deferral (donor_id, reason_code, end_date, screening_id)
-    SELECT p_donor, q.reason_code, CURRENT_DATE + r.default_days, sid
+    SELECT p_donor, q.reason_code, clinic_today() + r.default_days, sid
     FROM screening_answer a JOIN screening_question q USING (question_id) JOIN deferral_reason r USING (reason_code)
-    WHERE a.screening_id = sid AND a.answer = q.defer_on_answer;
+    WHERE a.screening_id = sid AND a.answer = q.defer_on_answer
+      AND NOT EXISTS (SELECT 1 FROM deferral d WHERE d.donor_id = p_donor AND d.reason_code = q.reason_code
+                      AND d.end_date >= clinic_today() + r.default_days);
     new_screening_id := sid;
 END $$;
 
@@ -188,10 +224,10 @@ BEGIN
     -- lock the donor before the interval check, so two recordings at the same moment run one after the other and the
     -- second one sees the first (BR-02)
     PERFORM 1 FROM donor WHERE user_id = p_donor FOR UPDATE;
-    IF NOT FOUND THEN RAISE EXCEPTION 'donor % not found', p_donor; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'donor: The donor was not found'; END IF;
     IF p_hemoglobin < (SELECT r.min_hemoglobin_gl FROM donor o JOIN eligibility_rule r USING (sex) WHERE o.user_id = p_donor) THEN
         INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by)
-        SELECT p_donor, 'LOWHB', CURRENT_DATE + default_days, p_staff FROM deferral_reason WHERE reason_code = 'LOWHB';
+        SELECT p_donor, 'LOWHB', clinic_today() + default_days, p_staff FROM deferral_reason WHERE reason_code = 'LOWHB';
         RETURN;
     END IF;
     -- a draw above 15% of the donor's estimated blood volume is unsafe whatever the type
@@ -215,7 +251,7 @@ LANGUAGE plpgsql AS $$
 DECLARE pending int; actor int := require_actor('{Staff}'); dtype text; bad text;
 BEGIN
     SELECT donation_type_code INTO dtype FROM donation WHERE donation_id = p_donation;
-    IF NOT FOUND THEN RAISE EXCEPTION 'donation % not found', p_donation; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'donation: Donation % was not found', p_donation; END IF;
     PERFORM require_own_facility(actor, donation_facility(p_donation), format('donation %s', p_donation));
     IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN
         RAISE EXCEPTION 'donation % was discarded', p_donation; END IF;
@@ -244,16 +280,34 @@ BEGIN
     WHERE t.is_active AND NOT EXISTS (SELECT 1 FROM test_result r WHERE r.donation_id = p_donation AND r.test_code = t.test_code);
     IF pending_tests = 0 AND (SELECT status FROM donation WHERE donation_id = p_donation) <> 'Discarded' THEN
         UPDATE blood_unit SET status = 'Available' WHERE donation_id = p_donation AND status = 'Collected';
+        IF FOUND THEN                              -- C15: new stock goes to open requests that are short
+            PERFORM top_up_requests(c.facility_id, c.component_code)
+            FROM (SELECT DISTINCT facility_id, component_code FROM blood_unit
+                  WHERE donation_id = p_donation AND status = 'Available' ORDER BY 1, 2) c;
+        END IF;
     END IF;
 END $$;
 
 -- p_results maps test_code -> 'Negative' | 'Positive'. A positive result fires on_positive_test (discard + flag).
+-- C8: any subset of the tests may be sent; a test already recorded with the same value is skipped, a different value for it
+-- is refused (results are final). The units are released once every active test is in.
 CREATE PROCEDURE record_tests(p_donation int, p_results jsonb, INOUT outcome text DEFAULT NULL) LANGUAGE plpgsql AS $$
-DECLARE pending int; actor int := require_actor('{Staff}');
+DECLARE pending int; actor int := require_actor('{Staff}'); bad record;
 BEGIN
     PERFORM require_own_facility(actor, donation_facility(p_donation), format('donation %s', p_donation));
+    IF p_results IS NULL OR jsonb_typeof(p_results) <> 'object' OR p_results = '{}' THEN
+        RAISE EXCEPTION 'tests: Enter at least one test result'; END IF;
+    SELECT key, value INTO bad FROM jsonb_each_text(p_results) e
+    WHERE NOT EXISTS (SELECT 1 FROM test_type t WHERE t.test_code = e.key) LIMIT 1;
+    IF FOUND THEN RAISE EXCEPTION 'tests: % is not a known test', bad.key; END IF;
+    SELECT key, value INTO bad FROM jsonb_each_text(p_results) e WHERE e.value IS NULL OR e.value NOT IN ('Negative', 'Positive') LIMIT 1;
+    IF FOUND THEN RAISE EXCEPTION 'tests: Choose Negative or Positive for %', bad.key; END IF;
+    SELECT e.key, r.result INTO bad FROM jsonb_each_text(p_results) e
+    JOIN test_result r ON r.donation_id = p_donation AND r.test_code = e.key WHERE r.result <> e.value ORDER BY e.key LIMIT 1;
+    IF FOUND THEN RAISE EXCEPTION 'tests: % is already recorded as %', bad.key, bad.result; END IF;
     INSERT INTO test_result (donation_id, test_code, result)
-    SELECT p_donation, key, value FROM jsonb_each_text(p_results);
+    SELECT p_donation, e.key, e.value FROM jsonb_each_text(p_results) e
+    WHERE NOT EXISTS (SELECT 1 FROM test_result r WHERE r.donation_id = p_donation AND r.test_code = e.key);
     IF (SELECT status FROM donation WHERE donation_id = p_donation) = 'Discarded' THEN outcome := 'Discarded'; RETURN; END IF;
     CALL release_tested(p_donation, pending);
     outcome := CASE WHEN pending > 0 THEN format('Awaiting %s test(s)', pending) ELSE 'Released' END;
@@ -264,7 +318,7 @@ CREATE PROCEDURE verify_blood_group(p_staff int, p_donor int, p_group text) LANG
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
     UPDATE donor SET blood_group = p_group, verified_by = p_staff, verified_at = now() WHERE user_id = p_donor;
-    IF NOT FOUND THEN RAISE EXCEPTION 'donor % not found', p_donor; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'donor: The donor was not found'; END IF;
 END $$;
 
 -- ---------------------------------------------------------------- FR-22 + FR-23 submit a request and reserve what stock covers
@@ -275,14 +329,17 @@ LANGUAGE plpgsql AS $$
 DECLARE got int;
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
-    p_patient_ref := require_text(p_patient_ref, 'patient reference');
-    IF p_units IS NULL OR p_units < 1 OR p_units > 50 THEN RAISE EXCEPTION 'units requested must be between 1 and 50'; END IF;
+    IF btrim(coalesce(p_patient_ref, '')) = '' THEN RAISE EXCEPTION 'patient_ref: Patient reference is required'; END IF;
+    p_patient_ref := btrim(p_patient_ref);
+    IF length(p_patient_ref) > 20 THEN RAISE EXCEPTION 'patient_ref: Use at most 20 characters for the patient reference'; END IF;
+    IF p_units IS NULL OR p_units < 1 OR p_units > 50 THEN RAISE EXCEPTION 'units: Enter a whole number of units from 1 to 50'; END IF;
+    IF p_required_by IS NULL THEN RAISE EXCEPTION 'required_by: Enter the date and time the blood is needed by'; END IF;
     -- BR-10: Emergency is needed within 1 hour, Urgent within 24 hours, Routine is scheduled for any later time
-    IF p_required_by <= now() THEN RAISE EXCEPTION 'required-by time must be in the future'; END IF;
+    IF p_required_by <= now() THEN RAISE EXCEPTION 'required_by: The required-by time must be in the future'; END IF;
     IF p_urgency = 'Emergency' AND p_required_by > now() + interval '1 hour' THEN
-        RAISE EXCEPTION 'an Emergency request is needed within 1 hour (BR-10)'; END IF;
+        RAISE EXCEPTION 'required_by: An Emergency request must be needed within 1 hour'; END IF;
     IF p_urgency = 'Urgent' AND p_required_by > now() + interval '24 hours' THEN
-        RAISE EXCEPTION 'an Urgent request is needed within 24 hours (BR-10)'; END IF;
+        RAISE EXCEPTION 'required_by: An Urgent request must be needed within 24 hours'; END IF;
     INSERT INTO blood_request (requested_by, patient_ref, recipient_group, component_code, units_requested, urgency, required_by)
     VALUES (p_staff, p_patient_ref, p_group, p_component, p_units, p_urgency, p_required_by) RETURNING request_id INTO new_request;
     CALL allocate(new_request, got);
@@ -293,15 +350,17 @@ END $$;
 CREATE PROCEDURE confirm_request_group(p_staff int, p_request int, p_group text,
                                        INOUT reserved_count int DEFAULT NULL, INOUT shortfall_count int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
-DECLARE got int;
+DECLARE got int; fac int;
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
-    IF (SELECT facility_id FROM v_request WHERE request_id = p_request)
-       IS DISTINCT FROM (SELECT facility_id FROM staff WHERE user_id = p_staff) THEN
-        RAISE EXCEPTION 'request % belongs to another facility', p_request; END IF;
+    -- the lab result belongs to the requesting facility; checked against p_staff even for a superuser session
+    fac := (SELECT facility_id FROM v_request WHERE request_id = p_request);
+    IF fac IS NULL THEN RAISE EXCEPTION 'request: Request #% was not found', p_request; END IF;
+    IF fac IS DISTINCT FROM (SELECT facility_id FROM staff WHERE user_id = p_staff) THEN
+        RAISE EXCEPTION 'Request #% belongs to another facility', p_request; END IF;
     UPDATE blood_request SET recipient_group = p_group
     WHERE request_id = p_request AND recipient_group IS NULL AND status = 'Open';
-    IF NOT FOUND THEN RAISE EXCEPTION 'request % is closed or already has a confirmed group', p_request; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Request #% is closed or already has a confirmed group', p_request; END IF;
     CALL allocate(p_request, got);
     SELECT s.units_reserved, s.shortfall INTO reserved_count, shortfall_count FROM v_request_status s WHERE s.request_id = p_request;
 END $$;
@@ -317,18 +376,24 @@ DECLARE cid int; n int; msg text;
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
     PERFORM require_own_facility(p_staff, (SELECT facility_id FROM v_request WHERE request_id = p_request),
-                                 format('request %s', p_request));
+                                 format('request #%s', p_request));
     IF (SELECT status FROM blood_request WHERE request_id = p_request) IS DISTINCT FROM 'Open' THEN
-        RAISE EXCEPTION 'request % is not open', p_request; END IF;
+        RAISE EXCEPTION 'Request #% is not open', p_request; END IF;
+    IF p_preferred < clinic_today() THEN RAISE EXCEPTION 'preferred_date: The preferred date cannot be in the past'; END IF;
+    -- DA-N4: a call asks donors to come while the blood is still needed, so the date is at most the request's own day
+    IF p_preferred > (SELECT clinic_date(required_by) FROM blood_request WHERE request_id = p_request) THEN
+        RAISE EXCEPTION 'preferred_date: The preferred date must be on or before %, the day request #% is needed by',
+            (SELECT to_char(clinic_date(required_by), 'FMDD Mon YYYY') FROM blood_request WHERE request_id = p_request), p_request;
+    END IF;
     msg := call_message(p_request, p_preferred);
     INSERT INTO donation_call (request_id, sent_by, message) VALUES (p_request, p_staff, msg) RETURNING call_id INTO cid;
     INSERT INTO call_recipient (call_id, donor_id)
     SELECT cid, o.user_id FROM eligible_donors(p_request) e JOIN donor o USING (donor_code)
     WHERE p_donor_codes IS NULL OR e.donor_code = ANY (p_donor_codes);
     GET DIAGNOSTICS n = ROW_COUNT;
-    IF n = 0 THEN RAISE EXCEPTION 'no eligible, compatible donor to call for request %', p_request; END IF;
-    INSERT INTO notification (user_id, message)
-    SELECT donor_id, msg FROM call_recipient WHERE call_id = cid;
+    IF n = 0 THEN RAISE EXCEPTION 'No eligible, compatible donor to call for request #%', p_request; END IF;
+    INSERT INTO notification (user_id, message, call_id)
+    SELECT donor_id, msg, cid FROM call_recipient WHERE call_id = cid;
     new_call_id := cid;
 END $$;
 
@@ -348,22 +413,38 @@ CREATE FUNCTION call_message(p_request int, p_preferred date DEFAULT NULL) RETUR
 $$;
 
 -- ---------------------------------------------------------------- FR-27 / UC-20 a donor answers a call once
--- Hands back the facility's name, address and phone on accept, 'declined', or 'closed' when the request no longer needs donors (2a).
+-- Hands back a sentence for the donor: where to go on accept (facility name, address, phone), a thank-you on decline.
+-- 2a: a call whose request is no longer Open or is past its required-by time is refused, so nobody travels for nothing.
+-- Answering marks the call's notification read, and the requesting facility's staff are told who accepted (STF-12).
 CREATE PROCEDURE respond_to_call(p_call int, p_donor int, p_accept boolean, INOUT reply text DEFAULT NULL) LANGUAGE plpgsql AS $$
-DECLARE st text; fname text; faddr text; fphone text;
+DECLARE st text; due timestamptz; req int; fac int; fname text; faddr text; fphone text; resp text; code text;
 BEGIN
     PERFORM require_session_user(p_donor);          -- UC-20: only the called donor answers
     IF NOT EXISTS (SELECT 1 FROM user_account WHERE user_id = p_donor AND is_active AND role = 'Donor') THEN
-        RAISE EXCEPTION 'only an active donor account can answer a call'; END IF;
-    SELECT br.status, fa.name, fa.address, fa.phone INTO st, fname, faddr, fphone
+        RAISE EXCEPTION 'Only an active donor account can answer a call'; END IF;
+    SELECT cr.response, br.status, br.required_by, br.request_id, fa.facility_id, fa.name, fa.address, fa.phone
+    INTO resp, st, due, req, fac, fname, faddr, fphone
     FROM call_recipient cr JOIN donation_call c USING (call_id) JOIN blood_request br ON br.request_id = c.request_id
     JOIN staff s ON s.user_id = br.requested_by JOIN facility fa ON fa.facility_id = s.facility_id
-    WHERE cr.call_id = p_call AND cr.donor_id = p_donor AND cr.response = 'Pending';
-    IF NOT FOUND THEN RAISE EXCEPTION 'no pending call % for donor %', p_call, p_donor; END IF;
-    IF st <> 'Open' THEN reply := 'closed'; RETURN; END IF;
+    WHERE cr.call_id = p_call AND cr.donor_id = p_donor
+    FOR UPDATE OF cr;
+    IF NOT FOUND THEN RAISE EXCEPTION 'call: This call was not found'; END IF;
+    IF resp <> 'Pending' THEN RAISE EXCEPTION 'call: You have already answered this call'; END IF;
+    IF st <> 'Open' OR due <= now() THEN
+        RAISE EXCEPTION 'call: This request is no longer open, so no donation is needed now. Thank you for answering'; END IF;
     UPDATE call_recipient SET response = CASE WHEN p_accept THEN 'Accepted' ELSE 'Declined' END, responded_at = now()
     WHERE call_id = p_call AND donor_id = p_donor;
-    reply := CASE WHEN p_accept THEN concat_ws(', ', fname, faddr, fphone) ELSE 'declined' END;
+    UPDATE notification SET read_at = now() WHERE user_id = p_donor AND call_id = p_call AND read_at IS NULL;
+    IF p_accept THEN
+        code := (SELECT donor_code FROM donor WHERE user_id = p_donor);
+        INSERT INTO notification (user_id, message, call_id)
+        SELECT s.user_id, format('Donor %s accepted the donation call for request #%s', code, req), p_call
+        FROM staff s JOIN user_account a USING (user_id) WHERE s.facility_id = fac AND a.is_active;
+        reply := format('Thank you. Please come to %s', fname) || coalesce(', ' || faddr, '')
+                 || coalesce('. Phone ' || fphone, '') || '.';
+    ELSE
+        reply := 'Thank you for letting us know.';
+    END IF;
 END $$;
 
 -- ---------------------------------------------------------------- UC-06 / FR-08 staff record a deferral at the in-person check
@@ -371,12 +452,21 @@ END $$;
 CREATE PROCEDURE record_deferral(p_staff int, p_donor int, p_reason text, p_end date DEFAULT NULL,
                                  INOUT new_deferral_id int DEFAULT NULL)
 LANGUAGE plpgsql AS $$
+DECLARE rr deferral_reason%ROWTYPE;
 BEGIN
     PERFORM require_role(p_staff, 'Staff');
+    IF NOT EXISTS (SELECT 1 FROM donor WHERE user_id = p_donor) THEN RAISE EXCEPTION 'donor: The donor was not found'; END IF;
+    SELECT * INTO rr FROM deferral_reason WHERE reason_code = p_reason;
+    IF NOT FOUND THEN RAISE EXCEPTION 'reason: Choose a deferral reason from the list'; END IF;
+    IF NOT rr.is_active THEN RAISE EXCEPTION 'reason: The reason "%" is retired: choose another', rr.description; END IF;
+    IF rr.is_permanent AND p_end IS NOT NULL THEN
+        RAISE EXCEPTION 'end_date: A permanent deferral reason cannot have an end date'; END IF;
+    IF p_end IS NOT NULL AND p_end <= clinic_today() THEN
+        RAISE EXCEPTION 'end_date: The end date must be after today'; END IF;
     INSERT INTO deferral (donor_id, reason_code, end_date, recorded_by)
-    SELECT p_donor, reason_code, CASE WHEN is_permanent THEN p_end ELSE coalesce(p_end, CURRENT_DATE + default_days) END, p_staff
-    FROM deferral_reason WHERE reason_code = p_reason RETURNING deferral_id INTO new_deferral_id;
-    IF new_deferral_id IS NULL THEN RAISE EXCEPTION 'unknown deferral reason %', p_reason; END IF;
+    VALUES (p_donor, rr.reason_code, CASE WHEN rr.is_permanent THEN NULL ELSE coalesce(p_end, clinic_today() + rr.default_days) END,
+            p_staff)
+    RETURNING deferral_id INTO new_deferral_id;
 END $$;
 
 -- ---------------------------------------------------------------- UC-15 / FR-16 discard a damaged or unsafe unit (Table 1)
@@ -391,13 +481,13 @@ BEGIN
     IF r IS NULL OR r = 'Donor' THEN RAISE EXCEPTION 'Staff or Admin access only'; END IF;
     PERFORM require_active_facility(p_user);
     SELECT * INTO u FROM blood_unit WHERE unit_id = p_unit FOR UPDATE;
-    IF NOT FOUND THEN RAISE EXCEPTION 'unit % not found', p_unit; END IF;
-    IF u.status = 'Reserved' THEN RAISE EXCEPTION 'release unit % from its request first', p_unit; END IF;
-    IF r = 'Staff' AND u.facility_id <> fac THEN RAISE EXCEPTION 'unit % belongs to another facility', p_unit; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'unit: Unit % was not found', p_unit; END IF;
+    IF r = 'Staff' AND u.facility_id <> fac THEN RAISE EXCEPTION 'Unit % belongs to another facility', p_unit; END IF;
+    IF u.status = 'Reserved' THEN RAISE EXCEPTION 'Release unit % from its request first', p_unit; END IF;
     IF r = 'Staff' AND u.status <> 'Available' THEN
-        RAISE EXCEPTION 'staff can discard only Available units; unit % is %', p_unit, u.status; END IF;
+        RAISE EXCEPTION 'Staff can discard only Available units; unit % is %', p_unit, u.status; END IF;
     IF r = 'Admin' AND u.status <> 'Quarantined' THEN
-        RAISE EXCEPTION 'an Admin discards Quarantined units only; unit % is %', p_unit, u.status; END IF;
+        RAISE EXCEPTION 'An Admin discards Quarantined units only; unit % is %', p_unit, u.status; END IF;
     UPDATE blood_unit SET status = 'Discarded', status_reason = p_reason WHERE unit_id = p_unit;
 END $$;
 
@@ -410,9 +500,9 @@ BEGIN
     WHERE a.user_id = p_user AND a.is_active;
     IF r IS NULL OR r = 'Donor' THEN RAISE EXCEPTION 'Staff or Admin access only'; END IF;
     PERFORM require_active_facility(p_user);
-    IF p_min IS NULL OR p_min < 0 OR p_min > 1000 THEN RAISE EXCEPTION 'minimum units must be between 0 and 1000'; END IF;
+    IF p_min IS NULL OR p_min < 0 OR p_min > 1000 THEN RAISE EXCEPTION 'min_units: Minimum units must be between 0 and 1000'; END IF;
     IF r = 'Staff' AND p_fac IS DISTINCT FROM fac THEN
-        RAISE EXCEPTION 'staff can only set thresholds for their own facility'; END IF;
+        RAISE EXCEPTION 'Staff can only set thresholds for their own facility'; END IF;
     INSERT INTO stock_threshold (facility_id, blood_group, component_code, min_units) VALUES (p_fac, p_group, p_comp, p_min)
     ON CONFLICT (facility_id, blood_group, component_code) DO UPDATE SET min_units = EXCLUDED.min_units;
 END $$;
@@ -424,6 +514,8 @@ LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
     p_first := require_text(p_first, 'first name'); p_last := require_text(p_last, 'last name');
+    IF EXISTS (SELECT 1 FROM user_account WHERE lower(email) = lower(btrim(p_email))) THEN
+        RAISE EXCEPTION 'email: That email is already used by another account'; END IF;
     INSERT INTO user_account (email, password_hash, first_name, last_name, role, created_by)
     VALUES (lower(p_email), p_password_hash, p_first, p_last, 'Admin', p_admin) RETURNING user_id INTO new_user_id;
     INSERT INTO admin (user_id) VALUES (new_user_id);
@@ -438,23 +530,24 @@ BEGIN
     END IF;
     PERFORM require_role(p_admin, 'Admin');
     IF NOT p_active THEN
-        IF p_user = p_admin THEN RAISE EXCEPTION 'you cannot deactivate your own account'; END IF;
+        IF p_user = p_admin THEN RAISE EXCEPTION 'You cannot deactivate your own account'; END IF;
         IF EXISTS (SELECT 1 FROM user_account WHERE user_id = p_user AND role = 'Admin' AND is_active)
            AND NOT EXISTS (SELECT 1 FROM user_account WHERE role = 'Admin' AND is_active AND user_id <> p_user) THEN
-            RAISE EXCEPTION 'the last active administrator cannot be deactivated'; END IF;
+            RAISE EXCEPTION 'The last active administrator cannot be deactivated'; END IF;
     END IF;
     UPDATE user_account SET is_active = p_active, failed_logins = 0, locked_until = NULL WHERE user_id = p_user;
-    IF NOT FOUND THEN RAISE EXCEPTION 'user % not found', p_user; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'user: The account was not found'; END IF;
 END $$;
 
 -- 2a: a facility with open requests cannot be deactivated until they are closed or moved
 CREATE PROCEDURE set_facility_active(p_admin int, p_fac int, p_active boolean) LANGUAGE plpgsql AS $$
+DECLARE fname text := (SELECT name FROM facility WHERE facility_id = p_fac);
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
+    IF fname IS NULL THEN RAISE EXCEPTION 'facility: The facility was not found'; END IF;
     IF NOT p_active AND EXISTS (SELECT 1 FROM v_request WHERE facility_id = p_fac AND status = 'Open') THEN
-        RAISE EXCEPTION 'facility % has open requests: close or move them first', p_fac; END IF;
+        RAISE EXCEPTION '% has open requests: close or move them first', fname; END IF;
     UPDATE facility SET is_active = p_active WHERE facility_id = p_fac;
-    IF NOT FOUND THEN RAISE EXCEPTION 'facility % not found', p_fac; END IF;
 END $$;
 
 -- p_id NULL creates a facility and comes back holding the new id; otherwise the facility p_id is edited.
@@ -463,17 +556,22 @@ LANGUAGE plpgsql AS $$
 DECLARE found_id int;
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
-    p_name := require_text(p_name, 'facility name'); p_address := require_text(p_address, 'facility address');
+    p_name := require_text(p_name, 'facility name', 'name');
+    p_address := require_text(p_address, 'facility address', 'address');
     p_phone := nullif(btrim(p_phone), ''); p_email := nullif(btrim(p_email), '');
     IF p_phone IS NOT NULL AND p_phone !~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$' THEN
-        RAISE EXCEPTION 'phone number is not valid: use digits, spaces, brackets, dots or dashes'; END IF;
+        RAISE EXCEPTION 'phone: Enter a phone number using digits, spaces, brackets, dots or dashes'; END IF;
+    -- C14: names are unique whatever the letter case (facility_name_ci); say so before the index does
+    IF EXISTS (SELECT 1 FROM facility WHERE lower(name) = lower(p_name) AND facility_id IS DISTINCT FROM p_id) THEN
+        RAISE EXCEPTION 'name: A facility named % already exists', (SELECT name FROM facility WHERE lower(name) = lower(p_name) LIMIT 1);
+    END IF;
     IF p_id IS NULL THEN
         INSERT INTO facility (name, facility_type, address, phone, email) VALUES (p_name, p_type, p_address, p_phone, p_email)
         RETURNING facility_id INTO p_id;
     ELSE
         UPDATE facility SET name = p_name, facility_type = p_type, address = p_address, phone = p_phone, email = p_email
         WHERE facility_id = p_id RETURNING facility_id INTO found_id;
-        IF found_id IS NULL THEN RAISE EXCEPTION 'facility % not found', p_id; END IF;
+        IF found_id IS NULL THEN RAISE EXCEPTION 'facility: The facility was not found'; END IF;
     END IF;
 END $$;
 
@@ -483,7 +581,12 @@ CREATE PROCEDURE update_donor_profile(p_donor int, p_phone text, p_email text, p
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_donor, 'Donor');
-    UPDATE user_account SET phone = p_phone, email = lower(p_email) WHERE user_id = p_donor;
+    p_phone := nullif(btrim(p_phone), '');
+    IF p_phone IS NOT NULL AND p_phone !~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$' THEN
+        RAISE EXCEPTION 'phone: Enter a phone number like 519-555-0100'; END IF;
+    IF EXISTS (SELECT 1 FROM user_account WHERE lower(email) = lower(btrim(p_email)) AND user_id <> p_donor) THEN
+        RAISE EXCEPTION 'email: That email is already used by another account'; END IF;
+    UPDATE user_account SET phone = p_phone, email = lower(btrim(p_email)) WHERE user_id = p_donor;
     UPDATE donor SET address = p_address, weight_kg = p_weight, height_cm = p_height WHERE user_id = p_donor;
 END $$;
 
@@ -507,10 +610,13 @@ BEGIN
     PERFORM require_role(p_admin, 'Admin');
     IF p_allowed THEN
         IF NOT coalesce(compat_is_safe(p_component, p_recipient, p_donor), FALSE) THEN
-            RAISE EXCEPTION 'unsafe pairing refused: % blood cannot be given to a % recipient (% rules)', p_donor, p_recipient,
+            RAISE EXCEPTION 'Unsafe pairing refused: % blood cannot be given to a % recipient (% rules)', p_donor, p_recipient,
                 CASE WHEN p_component = 'RBC' THEN 'ABO and Rh' ELSE 'ABO' END; END IF;
         INSERT INTO compatibility (component_code, recipient_group, donor_group) VALUES (p_component, p_recipient, p_donor)
         ON CONFLICT DO NOTHING;
+        IF FOUND THEN                              -- C15: a (re)added pairing may let short requests reserve now
+            PERFORM top_up_requests(f.facility_id, p_component) FROM facility f ORDER BY f.facility_id;
+        END IF;
     ELSE
         DELETE FROM compatibility WHERE component_code = p_component AND recipient_group = p_recipient AND donor_group = p_donor;
         -- reservations of open requests that the matrix no longer allows (an unknown group counts as compatible only
@@ -528,7 +634,7 @@ BEGIN
             UPDATE request_unit SET released_at = now() WHERE released_at IS NULL AND issued_at IS NULL
               AND (request_id, unit_id) IN (SELECT * FROM unnest(reqs, units));
             UPDATE blood_unit SET status = 'Available' WHERE status = 'Reserved' AND unit_id = ANY (units);
-            FOR r IN SELECT DISTINCT x FROM unnest(reqs) x ORDER BY 1 LOOP CALL allocate(r, got); END LOOP;
+            FOR r IN SELECT DISTINCT x FROM unnest(reqs) x ORDER BY 1 LOOP got := allocate_units(r); END LOOP;
         END IF;
     END IF;
 END $$;
@@ -536,18 +642,18 @@ END $$;
 CREATE PROCEDURE set_shelf_life(p_admin int, p_component text, p_days int) LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
-    IF p_days IS NULL OR p_days < 1 OR p_days > 1095 THEN RAISE EXCEPTION 'shelf life must be between 1 and 1095 days'; END IF;
+    IF p_days IS NULL OR p_days < 1 OR p_days > 1095 THEN RAISE EXCEPTION 'shelf_life_days: Shelf life must be between 1 and 1095 days'; END IF;
     UPDATE component_type SET shelf_life_days = p_days WHERE component_code = p_component;
-    IF NOT FOUND THEN RAISE EXCEPTION 'unknown component %', p_component; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'component: Choose a component from the list'; END IF;
 END $$;
 
 CREATE PROCEDURE set_donation_interval(p_admin int, p_type text, p_sex char, p_days int) LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
-    IF p_days IS NULL OR p_days < 1 OR p_days > 365 THEN RAISE EXCEPTION 'donation interval must be between 1 and 365 days'; END IF;
-    IF p_sex IS NULL OR p_sex NOT IN ('M', 'F') THEN RAISE EXCEPTION 'sex must be M or F'; END IF;
+    IF p_days IS NULL OR p_days < 1 OR p_days > 365 THEN RAISE EXCEPTION 'interval_days: The donation interval must be between 1 and 365 days'; END IF;
+    IF p_sex IS NULL OR p_sex NOT IN ('M', 'F') THEN RAISE EXCEPTION 'sex: Choose male or female'; END IF;
     IF NOT EXISTS (SELECT 1 FROM donation_type WHERE donation_type_code = p_type) THEN
-        RAISE EXCEPTION 'unknown donation type %', p_type; END IF;
+        RAISE EXCEPTION 'donation_type: Choose a donation type from the list'; END IF;
     INSERT INTO donation_interval (donation_type_code, sex, interval_days) VALUES (p_type, p_sex, p_days)
     ON CONFLICT (donation_type_code, sex) DO UPDATE SET interval_days = EXCLUDED.interval_days;
 END $$;
@@ -558,11 +664,26 @@ BEGIN
     PERFORM require_role(p_admin, 'Admin');
     p_description := require_text(p_description, 'description');
     IF NOT p_permanent AND (p_default_days IS NULL OR p_default_days < 1 OR p_default_days > 3650) THEN
-        RAISE EXCEPTION 'default length must be between 1 and 3650 days'; END IF;
+        RAISE EXCEPTION 'default_days: The default length must be between 1 and 3650 days'; END IF;
     INSERT INTO deferral_reason (reason_code, description, is_permanent, default_days)
     VALUES (upper(p_code), p_description, p_permanent, p_default_days)
     ON CONFLICT (reason_code) DO UPDATE
         SET description = EXCLUDED.description, is_permanent = EXCLUDED.is_permanent, default_days = EXCLUDED.default_days;
+END $$;
+
+-- C12 (post-spec addition, like height): a reason is retired instead of deleted so past deferrals keep it. A retired
+-- reason is not offered for new deferrals. One still used by an active screening question, or the automatic low
+-- hemoglobin reason (UC-07), cannot be retired.
+CREATE PROCEDURE set_deferral_reason_active(p_admin int, p_code text, p_active boolean) LANGUAGE plpgsql AS $$
+DECLARE d text := (SELECT description FROM deferral_reason WHERE reason_code = upper(p_code));
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    IF d IS NULL THEN RAISE EXCEPTION 'reason: The deferral reason was not found'; END IF;
+    IF NOT p_active AND upper(p_code) = 'LOWHB' THEN
+        RAISE EXCEPTION 'The reason "%" is applied automatically after a low hemoglobin reading and cannot be retired', d; END IF;
+    IF NOT p_active AND EXISTS (SELECT 1 FROM screening_question WHERE reason_code = upper(p_code) AND is_active) THEN
+        RAISE EXCEPTION 'The reason "%" is used by an active screening question: retire the question first', d; END IF;
+    UPDATE deferral_reason SET is_active = p_active WHERE reason_code = upper(p_code);
 END $$;
 
 CREATE PROCEDURE set_eligibility_rule(p_admin int, p_sex char, p_min_age int, p_min_weight numeric, p_min_hemoglobin numeric,
@@ -570,13 +691,13 @@ CREATE PROCEDURE set_eligibility_rule(p_admin int, p_sex char, p_min_age int, p_
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
-    IF p_min_age IS NULL OR p_min_age NOT BETWEEN 16 AND 25 THEN RAISE EXCEPTION 'minimum age must be between 16 and 25'; END IF;
+    IF p_min_age IS NULL OR p_min_age NOT BETWEEN 16 AND 25 THEN RAISE EXCEPTION 'min_age: The minimum age must be between 16 and 25'; END IF;
     IF p_min_weight IS NULL OR p_min_weight = 'NaN' OR p_min_weight NOT BETWEEN 30 AND 100 THEN
-        RAISE EXCEPTION 'minimum weight must be between 30 and 100 kg'; END IF;
+        RAISE EXCEPTION 'min_weight: The minimum weight must be between 30 and 100 kg'; END IF;
     IF p_min_hemoglobin IS NULL OR p_min_hemoglobin = 'NaN' OR p_min_hemoglobin NOT BETWEEN 100 AND 180 THEN
-        RAISE EXCEPTION 'minimum hemoglobin must be between 100 and 180 g/L'; END IF;
+        RAISE EXCEPTION 'min_hemoglobin: The minimum hemoglobin must be between 100 and 180 g/L'; END IF;
     IF p_min_blood_volume IS NULL OR p_min_blood_volume NOT BETWEEN 1500 AND 6000 THEN
-        RAISE EXCEPTION 'minimum estimated blood volume must be between 1500 and 6000 ml'; END IF;
+        RAISE EXCEPTION 'min_blood_volume: The minimum estimated blood volume must be between 1500 and 6000 ml'; END IF;
     UPDATE eligibility_rule SET min_age_years = p_min_age, min_weight_kg = p_min_weight, min_hemoglobin_gl = p_min_hemoglobin,
                                 min_blood_volume_ml = p_min_blood_volume
     WHERE sex = p_sex;
@@ -588,7 +709,7 @@ CREATE PROCEDURE mark_notification_read(p_user int, p_notification int) LANGUAGE
 BEGIN
     PERFORM require_session_user(p_user);
     IF NOT EXISTS (SELECT 1 FROM notification WHERE notification_id = p_notification AND user_id = p_user) THEN
-        RAISE EXCEPTION 'notification % not found', p_notification; END IF;
+        RAISE EXCEPTION 'notification: The notification was not found'; END IF;
     UPDATE notification SET read_at = now() WHERE notification_id = p_notification AND read_at IS NULL;
 END $$;
 
@@ -598,14 +719,17 @@ END $$;
 -- route Table 1 allows. Hands back how many units are back on the shelf; the flag is cleared so the donor can give again.
 CREATE PROCEDURE clear_lookback(p_admin int, p_donor int, p_note text, INOUT released int DEFAULT NULL) LANGUAGE plpgsql AS $$
 DECLARE why text := 'Lookback cleared: ' || coalesce(nullif(trim(p_note), ''), 'no risk found');
-        expired int;
+        expired int; code text := (SELECT donor_code FROM donor WHERE user_id = p_donor);
 BEGIN
     PERFORM require_role(p_admin, 'Admin');
-    IF NOT EXISTS (SELECT 1 FROM donor WHERE user_id = p_donor) THEN RAISE EXCEPTION 'donor % not found', p_donor; END IF;
+    IF code IS NULL THEN RAISE EXCEPTION 'donor: The donor was not found'; END IF;
     IF EXISTS (SELECT 1 FROM deferral WHERE donor_id = p_donor AND end_date IS NULL) THEN
-        RAISE EXCEPTION 'donor % has a permanent deferral: discard the quarantined units instead', p_donor; END IF;
+        RAISE EXCEPTION '% has a permanent deferral: discard the quarantined units instead', code; END IF;
     IF EXISTS (SELECT 1 FROM test_result t JOIN donation d USING (donation_id) WHERE d.donor_id = p_donor AND t.result = 'Positive') THEN
-        RAISE EXCEPTION 'donor % has a positive test on record: discard the quarantined units instead', p_donor; END IF;
+        RAISE EXCEPTION '% has a positive test on record: discard the quarantined units instead', code; END IF;
+    PERFORM lock_shelf(k.facility_id, k.component_code) FROM (         -- shelf locks first, sorted (lock_shelf)
+        SELECT DISTINCT b.facility_id, b.component_code FROM blood_unit b JOIN donation d USING (donation_id)
+        WHERE d.donor_id = p_donor AND b.status = 'Quarantined' ORDER BY 1, 2) k;
     UPDATE blood_unit SET status = 'Available', status_reason = why
     WHERE status = 'Quarantined' AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor);
     GET DIAGNOSTICS released = ROW_COUNT;
@@ -615,6 +739,11 @@ BEGIN
     GET DIAGNOSTICS expired = ROW_COUNT;
     released := released - expired;
     UPDATE donor SET is_flagged = FALSE WHERE user_id = p_donor;
+    IF released > 0 THEN                           -- C15: the units back on the shelf go to short open requests
+        PERFORM top_up_requests(c.facility_id, c.component_code)
+        FROM (SELECT DISTINCT facility_id, component_code FROM blood_unit WHERE status = 'Available' AND status_reason = why
+              AND donation_id IN (SELECT donation_id FROM donation WHERE donor_id = p_donor) ORDER BY 1, 2) c;
+    END IF;
 END $$;
 
 -- ---------------------------------------------------------------- UC-01 2a a user changes their own password; an Admin resets one
@@ -631,7 +760,7 @@ BEGIN
     PERFORM require_session_user(p_user);
     PERFORM require_bcrypt(p_hash);
     UPDATE user_account SET password_hash = p_hash WHERE user_id = p_user AND is_active;
-    IF NOT FOUND THEN RAISE EXCEPTION 'account % not found or inactive', p_user; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'The account was not found or is inactive'; END IF;
     UPDATE user_session SET ended_at = now() WHERE user_id = p_user AND ended_at IS NULL;
     INSERT INTO audit_log (user_id, action, table_name, record_id, field_name, new_value)       -- never the password itself
     VALUES (p_user, 'UPDATE', 'user_account', p_user::text, 'password', 'changed by the account holder');
@@ -642,11 +771,28 @@ BEGIN
     PERFORM require_role(p_admin, 'Admin');
     PERFORM require_bcrypt(p_hash);
     UPDATE user_account SET password_hash = p_hash, failed_logins = 0, locked_until = NULL WHERE user_id = p_user;
-    IF NOT FOUND THEN RAISE EXCEPTION 'user % not found', p_user; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'user: The account was not found'; END IF;
     UPDATE user_session SET ended_at = now() WHERE user_id = p_user AND ended_at IS NULL;
     -- who (the acting Admin), whose account (record_id) and when; never the password or its hash
     INSERT INTO audit_log (user_id, action, table_name, record_id, field_name, new_value)
     VALUES (p_admin, 'UPDATE', 'user_account', p_user::text, 'password', format('reset by admin %s', p_admin));
+END $$;
+
+-- ---------------------------------------------------------------- FR-04 / UC-23 an Admin corrects an account's name and contact details
+-- C12: emails are unique whatever the letter case; every change is audited by audit_user (SE-08).
+CREATE PROCEDURE update_account(p_admin int, p_user int, p_first text, p_last text, p_email text, p_phone text)
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM require_role(p_admin, 'Admin');
+    IF NOT EXISTS (SELECT 1 FROM user_account WHERE user_id = p_user) THEN RAISE EXCEPTION 'user: The account was not found'; END IF;
+    p_first := require_text(p_first, 'first name'); p_last := require_text(p_last, 'last name');
+    p_email := lower(btrim(coalesce(p_email, ''))); p_phone := nullif(btrim(p_phone), '');
+    IF p_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' THEN RAISE EXCEPTION 'email: Enter an email address like name@example.com'; END IF;
+    IF EXISTS (SELECT 1 FROM user_account WHERE lower(email) = p_email AND user_id <> p_user) THEN
+        RAISE EXCEPTION 'email: That email is already used by another account'; END IF;
+    IF p_phone IS NOT NULL AND p_phone !~ '^\+?[0-9][0-9 ().x-]{5,18}[0-9]$' THEN
+        RAISE EXCEPTION 'phone: Enter a phone number like 519-555-0100'; END IF;
+    UPDATE user_account SET first_name = p_first, last_name = p_last, email = p_email, phone = p_phone WHERE user_id = p_user;
 END $$;
 
 -- ---------------------------------------------------------------- SE-07 minimum disclosure for the application role
@@ -657,8 +803,31 @@ END $$;
 -- one email at a time, so the hashes cannot be listed.
 CREATE FUNCTION login_lookup(p_email text) RETURNS TABLE (user_id int, role varchar, password_hash varchar)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
-    SELECT a.user_id, a.role, a.password_hash FROM user_account a WHERE a.email = lower(p_email)
+    SELECT a.user_id, a.role, a.password_hash FROM user_account a WHERE a.email = lower(btrim(p_email))
 $$;
+
+-- UC-23 an Admin's view of one account's contact details, for the account edit page (C12)
+CREATE FUNCTION account_contact(p_user int) RETURNS TABLE (user_id int, email varchar, phone varchar, first_name varchar,
+                                                           last_name varchar, role varchar, is_active boolean)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
+#variable_conflict use_column
+BEGIN
+    PERFORM require_actor('{Admin}');
+    RETURN QUERY SELECT a.user_id, a.email, a.phone, a.first_name, a.last_name, a.role, a.is_active
+    FROM user_account a WHERE a.user_id = p_user;
+END $$;
+
+-- UC-23 account search by part of an email address, any letter case (C12): only the matching ids leave, for an Admin.
+-- Fewer than 3 characters match nothing, so the addresses cannot be read out one letter at a time.
+CREATE FUNCTION match_email(p_part text) RETURNS TABLE (user_id int)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = vytal, pg_temp AS $$
+#variable_conflict use_column
+BEGIN
+    PERFORM require_actor('{Admin}');
+    IF length(btrim(coalesce(p_part, ''))) < 3 THEN RETURN; END IF;
+    RETURN QUERY SELECT a.user_id FROM user_account a
+    WHERE a.email ILIKE '%' || replace(replace(replace(btrim(p_part), '\', '\\'), '%', '\%'), '_', '\_') || '%';
+END $$;
 
 -- UC-03 the acting user's own profile, contact details included; nobody else's
 CREATE FUNCTION my_profile() RETURNS TABLE (user_id int, email varchar, phone varchar, first_name varchar, last_name varchar,

@@ -4,8 +4,8 @@
  {{ m.csrf_field() }}
  <div><h2>Become a donor</h2><p class="muted" style="margin-top:6px">Takes a minute. Staff confirm your blood group at your first visit.</p></div>
  <div class="form-grid">
-  {{ m.field('first_name','First name', attrs='autocomplete="given-name" maxlength="60"') }}
-  {{ m.field('last_name','Last name', attrs='autocomplete="family-name" maxlength="60"') }}
+  {{ m.field('first_name','First name', attrs='autocomplete="given-name" maxlength="' ~ NAME_MAX ~ '"') }}
+  {{ m.field('last_name','Last name', attrs='autocomplete="family-name" maxlength="' ~ NAME_MAX ~ '"') }}
   <div class="full">{{ m.field('email','Email','email', attrs='autocomplete="email" maxlength="254"') }}</div>
   {{ m.field('phone','Phone','tel', required=false, attrs='autocomplete="tel" maxlength="30"') }}
   {{ m.field('date_of_birth','Date of birth','date', attrs='min="1900-01-01" max="'~today~'" autocomplete="bday"') }}
